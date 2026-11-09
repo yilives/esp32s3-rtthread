@@ -1,0 +1,69 @@
+[mapping:rtthread]
+archive: librtthread.a
+entries:
+    if IDF_RTOS_RTTHREAD = y:
+        # Every IRAM ISR passes through these helpers while cache is off.
+        irq (noflash)
+        context_gcc (noflash)
+        # Everything the trap path can reach, by whole object.
+        #
+        # Four separate rounds were lost to symbol lists that could not cover what
+        # the compiler generates: rtatomic.h's inline helpers exist once per
+        # translation unit under compiler-chosen names, and literal pools and jump
+        # tables follow their functions. Each omission left part of the trap path
+        # in flash, and the only symptom was a fault or a silent hang while the
+        # flash cache is off during MSPI/PSRAM timing tuning.
+        #
+        # The archive as a whole is ~105 KB of text, more DRAM than this image can
+        # spare, so the rule stops at the objects that matter:
+        #
+        #   irq, context_gcc, cpuport   - the trap entry/exit itself
+        #   cpu_mp / cpu_up             - rt_cpus_lock and the atomics it uses
+        #   scheduler_mp / scheduler_up - the critical-section helpers
+        #   smp_prims / smp_stack       - ticket lock, cpu id, nest table
+        #   thread                      - rt_thread_self, reached from xPortCanYield
+        irq (noflash)
+        context_gcc (noflash)
+        cpuport (noflash)
+        cpu_mp (noflash)
+        cpu_up (noflash)
+        scheduler_mp (noflash)
+        scheduler_up (noflash)
+        smp_prims (noflash)
+        smp_stack (noflash)
+        # atomic_riscv.c: reached from rt_interrupt_enter when RT_USING_HW_ATOMIC
+        # is on. Without this the atomic lives in IROM and the trap path faults
+        # there while the flash cache is off.
+        atomic_riscv (noflash)
+        thread:rt_thread_self (noflash)
+
+        if IDF_TARGET_ESP32C3 = y:
+            interrupt:rt_hw_interrupt_is_disabled (noflash)
+        else:
+            cpuport:rt_hw_interrupt_is_disabled (noflash)
+
+        # Xtensa (ESP32-S3).
+        #
+        # The RISC-V trap path lives in libriscv.a, so names like cpu_mp, smp_prims
+        # and atomic_riscv simply match nothing in this archive on Xtensa - which
+        # is why the list above can stay shared instead of being split per target.
+        #
+        # What the Xtensa port adds is the equivalent of that trap path:
+        # context_gcc.S (the five XT_RTOS_* callouts and the switch itself) and
+        # interrupt.c (the trampoline every IDF-installed line runs through).
+        # Both execute with PS.INTLEVEL at 1 and the flash cache potentially off -
+        # the window IDF opens for SPI-flash writes and MSPI timing tuning - so
+        # both must be in IRAM. `context_gcc (noflash)` above already covers the
+        # assembly; this adds the C half, and cpuport (noflash) above already
+        # covers rt_hw_interrupt_is_disabled and the ISR stack.
+        if IDF_TARGET_ESP32S3 = y:
+            interrupt (noflash)
+
+[mapping:rtthread_cache_guard_abort]
+archive: libesp_system.a
+entries:
+    if IDF_RTOS_RTTHREAD = y:
+        # The cache-off guard must reach the panic trap even when the general
+        # ESP_SYSTEM_IN_IRAM placement option is disabled.
+        esp_system_chip:esp_system_abort (noflash)
+        panic:panic_abort (noflash)

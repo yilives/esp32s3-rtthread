@@ -1,0 +1,29 @@
+# Variant overlay: boot in QEMU's esp32s3 machine.
+#
+# Applied by tools/build.ps1 -NoPsram, which builds into build-qemu/ and leaves
+# build/ as the hardware image. Two deviations from the hardware defaults, both
+# of them features the emulator does not model:
+#
+#   1. PSRAM off. QEMU's esp32s3 machine has no octal PSRAM, and with it on the
+#      emulated boot stops at
+#        E (43415) octal_psram: PSRAM chip is not connected, or wrong PSRAM line mode
+#        E (43415) esp_psram: PSRAM enabled but initialization failed. Bailing out.
+#      and never prints another line. CONFIG_SPIRAM_IGNORE_NOTFOUND would keep it
+#      alive, but the image would then run without the memory it was linked
+#      against, so the variant turns it off rather than pretending.
+#
+#   2. DIO flash mode. QEMU does not implement the QIE bit:
+#        E (36) qio_mode: Failed to set QIE bit, not enabling QIO mode
+#      and the boot then dies inside an assert before the kernel starts. The
+#      hardware image keeps QIO.
+#
+# The clock is NOT overridden: 240 MHz works in QEMU as long as the flash mode is
+# DIO, which is what the failure above actually was. An earlier version of this
+# file also lowered the clock and that turned out to be unnecessary.
+#
+#   I (177) cpu_start: cpu freq: 240000000 Hz
+#   tick    : 3014 -> 6014, delta 3000 (expected ~3000 at 1000 Hz)
+CONFIG_SPIRAM=n
+
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set

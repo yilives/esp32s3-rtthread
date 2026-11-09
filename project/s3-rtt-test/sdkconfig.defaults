@@ -1,0 +1,236 @@
+# ESP32-S3 + RT-Thread bring-up image.
+#
+# This file is the whole configuration. Every deviation from IDF's default S3
+# configuration is a line here plus a comment saying why; regenerating
+# sdkconfig from these defaults must reproduce a bootable image.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# ---------------------------------------------------------------- flash ----
+# 8 MB, measured on the board with `esptool flash-id`:
+#   Manufacturer 0x68, Device 0x4017, "Detected flash size: 8MB"
+# The module is an ESP32-S3R8N8: 8 MB flash, 8 MB octal PSRAM, 40 MHz crystal,
+# CH340K on UART0 (COM19 on this host).
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# 40 MHz crystal, measured from the schematic (X1, "40MHz", in the 主控时钟
+# block on XTAL_P/XTAL_N) and confirmed by the stock firmware's
+# "cpu freq: 240000000 Hz".
+CONFIG_XTAL_FREQ_40=y
+
+# QIO, matching the module's quad flash. Not required for correctness, but it
+# halves the boot time versus DIO and the stock firmware uses it.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# 240 MHz CPU. The board ships running 240 MHz ("cpu freq: 240000000 Hz" in the
+# stock firmware's log), and the S3's default of 160 leaves a third of the part
+# unused. Two reasons this matters for a kernel port specifically:
+#
+#   - the FPU is documented as needing the higher clock for full throughput;
+#   - the tick is derived from SYSTIMER against the APB clock, so a wrong CPU
+#     frequency is immediately visible as a wrong tick delta - which `s3rt tick`
+#     measures.
+#
+# Note the flash frequency stays at 80 MHz: above that the MSPI timing must be
+# retuned, and there is nothing to gain here yet.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# ------------------------------------------------------------------ OS -----
+# Replace the FreeRTOS kernel with RT-Thread (components/rtthread).
+CONFIG_IDF_RTOS_RTTHREAD=y
+
+# The FreeRTOS-API compatibility layer. Required as soon as an IDF component that
+# creates a task, queue or semaphore is linked in, which is immediate once Wi-Fi
+# or Bluetooth is enabled: esp_event, esp_netif, lwip, esp_wifi and the NimBLE
+# host all allocate FreeRTOS objects. On, because this image now carries both.
+#
+# (The S31 port carries the identical setting for the identical reason.)
+CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM=y
+
+# Single core. These two must stay identical: components/freertos/app_startup.c:50
+# has a compile-time #error when they disagree, because AMP (one core on one OS,
+# the other on another) is not supported.
+#
+# The S3 has two LX7 cores, and this port has a working dual-core build - the
+# S32C1I spinlocks, per-core state, the IPI line and the second core's entry are
+# all implemented and link. It does not reach a shell, though: the boot stops
+# after the version banner inside the first context switch out of
+# rt_system_scheduler_start(), on CPU0 alone. See bsp/ESP/ESP32_S3/rtconfig.h for
+# what is known and how to re-enable it.
+#
+# CONFIG_FREERTOS_NUMBER_OF_CORES follows FREERTOS_UNICORE, and it sizes the
+# per-core arrays in xtensa_intr.c (handler table), intr_alloc.c (non-IRAM
+# masks) and crosscore_int.c (reason words).
+# CONFIG_FREERTOS_UNICORE is not set
+# CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE is not set
+
+# Must equal RT_TICK_PER_SECOND in components/rtthread/port/esp32s3/rtconfig.h.
+# port_systick.c has a _Static_assert on it.
+CONFIG_FREERTOS_HZ=1000
+
+# The SYSTIMER alarm, not CCOUNT. CCOUNT would make XT_RTOS_TIMER_INT live and
+# install a second tick source inside the level-1 vector; the RT-Thread port
+# deliberately leaves that macro undefined and takes its tick from the
+# SYSTIMER alarm through esp_intr_alloc()/SysTickIsrHandler.
+CONFIG_FREERTOS_SYSTICK_USES_SYSTIMER=y
+CONFIG_FREERTOS_CORETIMER_SYSTIMER_LVL1=y
+
+# ------------------------------------------------------------- console -----
+# UART0 at 115200, exactly as the ROM configured it. The port's console
+# (port/esp32s3/console.c) writes through esp_rom_output_putc and reads the
+# UART0 FIFO directly, so nothing here needs a driver.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# --------------------------------------------------------------- memory ----
+# The module is an ESP32-S3R8N8: 8 MB flash **and 8 MB octal PSRAM**. Measured on
+# this board from the stock firmware's own boot log:
+#
+#   octal_psram: density      : 0x03 (64 Mbit)
+#   octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)
+#   MSPI Timing: PSRAM timing tuning index: 5
+#   esp_psram: Found 8MB PSRAM device
+#   esp_psram: Speed: 80MHz
+#
+# It is on at 80 MHz, the fastest speed IDF offers for octal PSRAM on the S3
+# without IDF_EXPERIMENTAL_FEATURES (120 MHz octal is documented as
+# temperature-fragile), and the speed the stock firmware already proved stable
+# on this exact board.
+#
+# This is worth having on a kernel port specifically: PSRAM initialisation runs
+# MSPI timing tuning, which is the code path that enters critical sections with
+# the flash cache disabled - i.e. the one that exercises
+# xPortEnterCriticalTimeout()/vPortExitCritical() from port/esp32s3/critical.c
+# under the worst conditions.
+#
+# CAPS_ALLOC, not USE_MALLOC: the RT-Thread heap is a separate region
+# (IDF_RTTHREAD_HEAP_SIZE, carved out of internal DRAM), so plain malloc()
+# returning PSRAM would hand out buffers RT-Thread's allocator cannot see.
+# PSRAM is reachable through heap_caps_malloc(..., MALLOC_CAP_SPIRAM).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_MEMTEST=y
+# Keep the image bootable if PSRAM ever fails to probe: print a warning and
+# continue on internal SRAM instead of bricking a bring-up board.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# The RT-Thread kernel heap. esp_system/startup.c calls
+# rt_system_heap_init(&__heap_start__, &__heap_end__) before any CORE-stage init
+# function runs, and those symbols come from the .heap section that
+# esp_system/ld/esp32s3/sections.ld.in adds for CONFIG_IDF_RTOS_RTTHREAD.
+#
+# 64 KB: the kernel's own objects (idle + main + tshell threads with 2 KB, 4 KB
+# and 4 KB stacks, the timer thread, ~40 kernel objects) come to roughly 12 KB,
+# and the shell allocates a line buffer per command. 40 KB is enough for the
+# kernel alone; 64 KB leaves room for a small application without taking DRAM
+# away from IDF's own heap, which is what a bring-up image needs on a board that
+# may later carry Wi-Fi.
+CONFIG_IDF_RTTHREAD_HEAP_SIZE=131072
+
+# ----------------------------------------------------------- boot speed ----
+# The bootloader's log is useful on a first boot and noise afterwards. This is
+# a bring-up image, so keep it.
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+
+# -------------------------------------------------------------- watchdog ---
+# The interrupt watchdog is NOT started by this port yet (rt_hw_board_init does
+# not call esp_int_wdt_init; see port/esp32s3/board.c). Leaving the option on
+# would suggest it is armed when nothing arms it, so turn it off and record the
+# decision rather than leaving a config bit that lies.
+CONFIG_ESP_INT_WDT=n
+
+# No task watchdog either: nothing in this image subscribes to it, and a
+# watchdog with no subscribers catches nothing.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# -------------------------------------------------------------- wireless ----
+# Wi-Fi. The stack is IDF's, unmodified: esp_wifi -> lwip -> esp_netif, driven
+# from RT-Thread threads through the FreeRTOS shim. Nothing about the radio is
+# architecture specific - xtensa vs riscv only decides who saves the registers.
+#
+# NVS is required and not optional: esp_wifi_init() stores its calibration data
+# and the PHY's RF calibration result there, and returns ESP_ERR_NVS_NOT_INITIALIZED
+# if the partition is missing.
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+# SoftAP as well as Station: the board has no credentials baked in, so the AP is
+# how it can be reached when there is no known network to join.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# The PHY and the coexistence layer. esp_coex is what calls esp_timer_create()
+# from a SECONDARY init function, which is why board.c now starts esp_timer at
+# priority 99 instead of leaving it to IDF.
+CONFIG_ESP_PHY_ENABLED=y
+CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=y
+CONFIG_ESP_PHY_RF_CAL_PARTIAL=y
+CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=20
+
+# Bluetooth LE, NimBLE host (not Bluedroid). NimBLE is the smaller of the two and
+# the one the S31 port already exercises, so a failure here is more likely to be
+# this port's fault than a new stack's.
+#
+# BLE only - the S3's radio supports Bluetooth 5 LE; classic BR/EDR is not part
+# of the S3. Both roles are enabled so the chip can be found (peripheral) and
+# scan (central/observer).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+
+# Relax the PHY/RF calibration requirement for the first wireless bring-up: on a
+# board whose PHY calibration data is not yet stored in NVS (a brand new chip, or
+# an erased NVS partition) a failed calibration otherwise aborts the boot.
+CONFIG_ESP_PHY_INIT_DATA_IN_PARTITION=n
+
+# -------------------------------------------------------------- lwip --------
+# IPv4 only, DHCP client on the station interface. IPv6, mDNS and the lwip
+# bridge are left off: every one of them is another task and another buffer
+# pool, and none is needed to prove the link works.
+CONFIG_LWIP_IPV4=y
+CONFIG_LWIP_IPV6=n
+CONFIG_LWIP_DHCP=y
+CONFIG_LWIP_DHCPS=y
+CONFIG_LWIP_MAX_SOCKETS=8
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+
+# -------------------------------------------------------- partitions --------
+# partitions.csv, not the stock single-app table.
+#
+# The stock table gives the application 1 MB. That was enough for the kernel and
+# the peripherals (226 KB) and is not enough with Wi-Fi and BLE linked in:
+#
+#   Error: app partition is too small for binary s3_rtt_test.bin size 0x101160
+#
+# partitions.csv here has the same nvs (0x9000, 24 KB) and phy_init (0xf000,
+# 4 KB) partitions the drivers need, and a 3 MB factory slot - 8 MB of flash,
+# so there is no reason to squeeze the app into 1 MB.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_SINGLE_APP=n
+
+# esp_ipc's ISR variant installs a level-5 handler that calls esp_ipc_func
+# unconditionally. Under this port's SMP bring-up that handler runs on CPU1 with
+# esp_ipc_func == NULL and jumps to address 0 - InstrFetchProhibited, PC : 0x0,
+# only after the task variant has already delivered its payload. The task
+# variant (CONFIG_ESP_IPC_ISR_ENABLE=n) does the same work from
+# ipc_task, which is enough: nothing on this board needs the sub-microsecond
+# cross-core latency the ISR path exists for.
+# CONFIG_ESP_IPC_ISR_ENABLE is not set
+
+# The backtrace printer walks the stack and asserts when a frame pointer is not
+# in a live stack. Under the dual-core bring-up that assertion fires BEFORE the
+# real panic is printed, and the printer itself then faults - so the actual cause
+# is never reported. Turn it off until the kernel is stable.
+# CONFIG_ESP_SYSTEM_USE_BACKTRACE is not set

@@ -1,0 +1,34 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+bsp = os.path.dirname(cwd)
+
+# The board layer of the ESP32-S3 port. Everything here talks to ESP-IDF's LL
+# headers (the peripheral register definitions and the ROM entry points), which
+# is what makes it board code rather than architecture code - the architecture
+# half lives in libcpu/xtensa.
+src = [
+    'board.c',        # rt_hw_board_init: system timer tick, FPU enable, reset hook
+    'console.c',      # rt_hw_console_output/getchar over the ROM and the UART LL
+    'serial.c',       # uart0 as an rt_serial v1 device
+    'gpio.c',         # rt_pin_ops over the GPIO LL
+    'pwm.c',          # rt_device_pwm over the LEDC LL
+    'i2c.c',          # rt_i2c_bus_device over the I2C LL
+    'spi.c',          # rt_spi_bus over the GPSPI LL
+    'adc.c',          # rt_adc_device over the SAR ADC
+    'interrupt.c',    # rt_hw_interrupt_install/mask/umask onto xt_set_interrupt_handler
+    'critical.c',     # the FreeRTOS port API that IDF components call directly
+]
+
+CPPPATH = [cwd, bsp, os.path.join(bsp, '..', '..', '..', 'libcpu', 'xtensa')]
+
+# The chip's LL / ROM / Xtensa headers come from ESP-IDF. Derive the list
+# instead of hard-coding it; see board_idf.py for why.
+sys.path.insert(0, bsp)
+from board_idf import idf_include_paths
+CPPPATH += idf_include_paths(rtconfig.idf_path)
+
+group = DefineGroup('Board', src, depend = [''], CPPPATH = CPPPATH)
+
+Return('group')

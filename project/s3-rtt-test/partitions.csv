@@ -1,0 +1,28 @@
+# ESP32-S3 bring-up image: one app slot, a storage partition for the filesystem.
+#
+# 8 MB of flash (measured), so the application gets 3 MB. The stock single-app
+# table gives it 1 MB, which is not enough once Wi-Fi and BLE are linked in:
+#   Error: app partition is too small for binary s3_rtt_test.bin size 0x101160
+#
+# nvs and phy_init are the two data partitions the drivers need, and they keep
+# the offsets IDF's stock table uses (0x9000 and 0xf000), so a board flashed with
+# either table still finds its Wi-Fi calibration data in the same place.
+#
+# storage is the filesystem: 1 MB of FAT, mounted at /storage by s3fs. It starts
+# at 0x310000, immediately after the 3 MB application slot, and the table still
+# leaves ~4.9 MB of the 8 MB unallocated - deliberately, so growing the app or
+# adding an OTA pair later does not require moving this partition and
+# reformatting.
+#
+# The layout is unchanged for anyone who never runs s3fs: an unmounted FAT
+# partition is just erased flash, and nvs/phy_init/factory keep their offsets.
+#
+# Note: only '#' starts a comment here. The C-style /* */ banner this file used
+# to carry is not a comment to gen_esp32part.py, which parses line 1 as a
+# partition row and fails with "Value 'no OTA' is not valid". The table was never
+# used before - the build was on the stock single-app table - so nobody noticed.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x300000,
+storage,  data, fat,     0x310000, 0x100000,

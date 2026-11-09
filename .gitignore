@@ -1,0 +1,37 @@
+# Ignore build output and local artefacts.
+build/
+build-*/
+*.o
+*.obj
+*.d
+*.a
+*.elf
+*.bin
+*.map
+*.hex
+*.lst
+
+# SCons
+.sconsign.dblite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+
+# Serial captures and ad-hoc logs - not deliverables
+*.log
+serial-*.txt
+
+# Local sdkconfig overlays: the canonical ones are sdkconfig.defaults and
+# sdkconfig.nopsram. A generated `sdkconfig` records one machine's answers and
+# should not travel.
+project/s3-rtt-test/sdkconfig

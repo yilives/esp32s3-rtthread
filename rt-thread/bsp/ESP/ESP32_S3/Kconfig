@@ -1,0 +1,80 @@
+mainmenu "RT-Thread Configuration"
+
+BSP_DIR := .
+
+RTT_DIR := ../../..
+
+PKGS_DIR := packages
+
+source "$(RTT_DIR)/Kconfig"
+osource "$PKGS_DIR/Kconfig"
+
+menu "Hardware Drivers Config"
+
+    menu "Onboard Peripheral Drivers"
+
+        config BSP_USING_LED
+            bool "Enable board LED (GPIO48, active low)"
+            default y
+
+        config BSP_USING_KEY
+            bool "Enable BOOT button (GPIO0)"
+            default y
+
+    endmenu
+
+    menu "On-chip Peripheral Drivers"
+
+        config BSP_USING_UART0
+            bool "Enable UART0 (console)"
+            default y
+            select RT_USING_SERIAL
+
+        config BSP_USING_GPIO
+            bool "Enable GPIO"
+            default y
+            select RT_USING_PIN
+
+        config BSP_USING_PWM
+            bool "Enable LEDC PWM"
+            default y
+            select RT_USING_PWM
+
+        config BSP_USING_I2C0
+            bool "Enable I2C0 (GPIO8 SDA / GPIO9 SCL)"
+            default y
+            select RT_USING_I2C
+
+        config BSP_USING_SPI0
+            bool "Enable SPI0 / GPSPI2 (GPIO11-13)"
+            default y
+            select RT_USING_SPI
+
+        config BSP_USING_ADC1
+            bool "Enable SAR ADC1 / ADC2"
+            default y
+            select RT_USING_ADC
+
+    endmenu
+
+    menu "Board options"
+
+        config BSP_XTAL_FREQ
+            int "Crystal frequency (MHz)"
+            default 40
+
+        config BSP_FLASH_SIZE_MB
+            int "SPI flash size (MB)"
+            default 8
+
+        config BSP_PSRAM_SIZE_MB
+            int "Octal PSRAM size (MB), 0 if not fitted"
+            default 8
+
+        config BSP_RTTHREAD_HEAP_SIZE
+            int "RT-Thread kernel heap (bytes, internal DRAM)"
+            default 65536
+
+    endmenu
+
+endmenu

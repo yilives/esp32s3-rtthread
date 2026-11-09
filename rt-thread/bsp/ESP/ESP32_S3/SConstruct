@@ -1,0 +1,48 @@
+import os
+import sys
+
+# Entry point of the scons build for this BSP.
+#
+# There are two supported ways to build this port, and they share their sources:
+#
+#   1. ESP-IDF:  idf.py -DIDF_TARGET=esp32s3 -DCONFIG_IDF_RTOS_RTTHREAD=y build
+#      This is what has been verified on hardware. IDF owns the bootloader, the
+#      partition table, the flash layout and the ROM linking; the RT-Thread
+#      component in components/rtthread compiles the sources from this tree.
+#
+#   2. scons (this file): the plain RT-Thread flow, matching how every other BSP
+#      in bsp/ builds. It produces rtthread.elf/rtthread.bin directly and needs
+#      an ESP-IDF checkout on the include path for the chip's xtensa-config
+#      headers (see rtconfig.py).
+#
+# Route 2 does not yet have a bootloader or a flash image step of its own - that
+# is what route 1 uses IDF for - so it is the bring-up/debug flow rather than
+# the production one.
+
+RTT_ROOT = os.getenv('RTT_ROOT')
+if RTT_ROOT is None:
+    RTT_ROOT = os.path.normpath(os.path.join(os.getcwd(), '..', '..', '..'))
+
+sys.path = sys.path + [os.path.join(RTT_ROOT, 'tools')]
+import rtconfig
+from building import *
+
+TARGET = 'rtthread.' + rtconfig.TARGET_EXT
+
+DefaultEnvironment(tools=[])
+env = Environment(tools = ['mingw'],
+    AS   = rtconfig.AS,   ASFLAGS   = rtconfig.AFLAGS,
+    CC   = rtconfig.CC,   CFLAGS    = rtconfig.CFLAGS,
+    CXX  = rtconfig.CXX,  CXXFLAGS  = rtconfig.CXXFLAGS,
+    AR   = rtconfig.AR,   ARFLAGS   = '-rc',
+    LINK = rtconfig.LINK, LINKFLAGS = rtconfig.LFLAGS)
+env.PrependENVPath('PATH', rtconfig.EXEC_PATH)
+env['ASCOM'] = env['ASPPCOM']
+
+Export('RTT_ROOT')
+Export('rtconfig')
+
+# PrepareBuilding pulls in the kernel (src/), the architecture layer
+# (libcpu/xtensa) and every component the .config selects.
+objs = PrepareBuilding(env, RTT_ROOT, has_libcpu = True, remove_components = ['libc'])
+DoBuilding(TARGET, objs)
