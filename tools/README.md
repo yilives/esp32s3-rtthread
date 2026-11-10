@@ -15,7 +15,8 @@
 | `env.ps1` | **共享的环境发现**：工具链、IDF 树、python venv、IDF 版本、RT-Thread 树、PATH |
 | `build.ps1` | 构建（`-NoPsram` 出 QEMU 变体，`-Qemu` 构建后直接跑 QEMU）|
 | `qemu.ps1` | 跑 QEMU 并做 PASS/FAIL 判定 |
-| `qemu-gdb.ps1` | 起 QEMU 并冻结等 GDB 附加 |
+| `qemu-gdb.ps1` | 起 QEMU 并冻结等 GDB 附加（`-Run` 则不冻结）|
+| `gdb-bt.ps1` | attach GDB、halt、打印双核 backtrace（`-StartQemu` 先起 QEMU）|
 | `fetch-upstream.ps1` | 把本仓库的改动应用到上游树 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，

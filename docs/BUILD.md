@@ -285,6 +285,15 @@ msh >
 .\tools\qemu.ps1  -Project .\project\s3-rtt-test -BuildDir build-qemu -TimeoutSec 70
 ```
 
+**QEMU 里也能看到两个核。** gate 现在会跑 `s3smp` 并检查 `CPUS_NR=2` ——
+原来的 5 条期望全都能被单核启动满足，所以 CPU1 起没起来它不知道。
+
+```
+s3smp: CPUS_NR=2, this core=0
+  cpu0: switches=82 current=tshell
+  cpu1: switches=60 current=tidle1
+```
+
 **期望**：
 
 ```
@@ -295,6 +304,25 @@ RESULT: PASS - all 5 expectation(s) matched
 > 每次都确认 `.elf` / `.bin` 的时间戳是新的。
 
 ---
+
+### GDB
+
+QEMU 停在复位点等 GDB：
+
+```powershell
+.\tools\qemu-gdb.ps1                    # 冻结
+.\tools\gdb-bt.ps1 -StartQemu           # 起来 + attach + 打印双核 backtrace
+```
+
+**几条 GDB 命令在这个目标上会挂**，报错方式不像报错：
+
+| 命令 | 结果 |
+| --- | --- |
+| `p rt_thread_self()->parent.name` | **挂死** —— inferior function call 需要往目标注入代码，跑着的 QEMU 做不到 |
+| `p rt_tick` | `No symbol` —— RT-Thread SMP 的 tick 在 `struct rt_cpu` 里，每核一份 |
+| `info threads` / `bt` / `p <全局变量>` | ✅ 正常 |
+
+所以 `gdb-bt.ps1` 只做能做的：`monitor stop` 后打印 `info threads` 和两核 backtrace。
 
 ## 7. 下一步
 

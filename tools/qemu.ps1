@@ -75,9 +75,17 @@ param(
         'threads started',
         'verdict : PASS',
         's3rt v0\.1',
-        'uart0 irq : [1-9][0-9]* entries'
+        'uart0 irq : [1-9][0-9]* entries',
+        # Both cores running. Added because the gate passed while QEMU's CPU1
+        # was still parked in call_start_cpu1 - the five original expectations
+        # are all satisfied by a single-core boot, so nothing caught it.
+        'CPUS_NR=2'
     ),
-    [string[]]$InputLine = @('s3rt', 's3rt irq', 's3rt tick', 'list thread', 'free'),
+    # s3smp is in here because the gate otherwise cannot tell a dual-core boot
+    # from a single-core one: every other expectation is satisfied by CPU0
+    # alone. Measured - QEMU's CPU1 sat in call_start_cpu1 while the gate
+    # reported PASS, and only a manual GDB session showed it.
+    [string[]]$InputLine = @('s3rt', 's3rt irq', 's3rt tick', 's3smp', 'list thread', 'free'),
     # How long to wait before typing InputLine, so the shell prompt exists and
     # the selftest has printed its verdict.
     [int]$InputDelaySec = 12,
