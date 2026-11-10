@@ -236,7 +236,6 @@ void rt_hw_board_reset(void)
 #ifdef RT_USING_SMP
 /* Handshake with the tick on the other core. Both words are plain DRAM. */
 volatile rt_uint32_t xt_rt_flash_op;
-volatile rt_uint32_t xt_rt_flash_ack;
 
 /*
  * Which core opened the flash window.
@@ -274,7 +273,58 @@ static rt_hw_spinlock_t xt_rt_flash_lock = __RT_HW_SPIN_LOCK_UNLOCKED(0);
  *
  * Only the doing core touches this counter, so no atomics are needed.
  */
-static rt_uint32_t xt_rt_flash_depth;
+/*
+ * Nesting depth, PER CORE.
+ *
+ * This was a single global and it corrupts under the exact workload the port
+ * exists to support. Two cores can be inside a flash operation at the same
+ * time on different SPI buses, and the depth counter is what decides whether an
+ * entry is "nested" or "outer" - a decision only the entering core can make.
+ *
+ * The corruption is silent and ends in a deadlock rather than a fault:
+ *
+ *   CPU1  stop  -> depth 0->1, takes the lock, op=1, cpu=1
+ *   CPU0  stop  -> sees depth != 0, assumes it is nested, depth 1->2, returns
+ *                  (it never took the lock and never parked CPU1)
+ *   CPU1  resume-> depth 2->1, still "nested", returns without clearing op
+ *   CPU0  resume-> depth == 1, so it sets depth=0, op=0 and UNLOCKS A LOCK IT
+ *                  DOES NOT HOLD
+ *
+ * After that the spinlock's owner field is wrong and the next flash operation
+ * on either core spins forever. Measured as a hang partway through a 1 MB
+ * partition erase, with Wi-Fi running: `[0][1000][2000]` then silence, no
+ * panic, no watchdog (the feeder was paused for the erase).
+ */
+static rt_uint32_t xt_rt_flash_depth[RT_CPUS_NR];
+
+/*
+ * Park-handshake generation.
+ *
+ * Replaces the original "clear ack, set op, wait for ack" scheme, which has a
+ * race that shows up on every large erase:
+ *
+ *   CPU0 resume -> op = 0
+ *   CPU1        -> observes op == 0, is about to leave the park loop but has not
+ *                  returned yet
+ *   CPU0 stop   -> ack = 0, op = 1        (next sector)
+ *   CPU1        -> already out of the loop, so it never acknowledges
+ *   CPU0        -> waits for an ack that can no longer arrive
+ *
+ * Measured as a hang two or three sectors into a 1 MB partition erase with
+ * Wi-Fi up: `[0][1000]` then silence, no panic, and no watchdog because the
+ * feeder is paused for the erase.
+ *
+ * A monotonically increasing generation removes the window by construction: the
+ * parked core publishes the generation it has acknowledged, and the doing core
+ * waits for that value to reach its own. There is no "cleared" state to miss,
+ * because the number only ever goes up.
+ */
+volatile rt_uint32_t xt_rt_flash_gen;             /* set by the doing core */
+volatile rt_uint32_t xt_rt_flash_ack_gen;         /* published by the parked core */
+
+/* Incremented when the handshake takes longer than ~1 s. Diagnostic only: it is
+ * counted rather than printed because the console cannot be used here. */
+volatile rt_uint32_t xt_rt_flash_park_slow;
 #endif
 
 void IRAM_ATTR spi_flash_other_core_stop(void)
@@ -337,19 +387,25 @@ void IRAM_ATTR spi_flash_other_core_stop(void)
      * A nested entry is already inside the outer window, so it neither needs the
      * lock nor the handshake.
      */
-    if (xt_rt_flash_depth != 0)
     {
-        xt_rt_flash_depth++;
-        return;
+        rt_uint32_t me = (rt_uint32_t)rt_hw_cpu_id();
+
+        if (xt_rt_flash_depth[me] != 0)
+        {
+            xt_rt_flash_depth[me]++;
+            return;
+        }
     }
 
     rt_hw_spin_lock(&xt_rt_flash_lock);
 
-
-    xt_rt_flash_depth = 1;
-    xt_rt_flash_ack = 0;
+    xt_rt_flash_depth[rt_hw_cpu_id()] = 1;
     xt_rt_flash_cpu = (rt_uint32_t)rt_hw_cpu_id();
-    xt_rt_flash_op  = 1;
+
+    /* Publish a new generation BEFORE op, so a parked core that is still inside
+     * the loop sees the new number rather than a stale one. */
+    xt_rt_flash_gen++;
+    xt_rt_flash_op = 1;
 
     /*
      * Wait for the acknowledgement WITHOUT a give-up.
@@ -377,14 +433,23 @@ void IRAM_ATTR spi_flash_other_core_stop(void)
      * The 4e6-iteration check is kept as a console warning only, so a stuck
      * handshake is diagnosable instead of silent.
      */
-    while (xt_rt_flash_ack == 0)
+    while (xt_rt_flash_ack_gen != xt_rt_flash_gen)
     {
         /* Unbounded on purpose - see the note below. The counter only decides
          * when to say something, never when to give up. */
-        if (spins == 40000000u)
+        if (spins == 2000000u)
         {
-            rt_kprintf("board: flash park handshake slow - other core has not "
-                       "acknowledged yet (still waiting)\n");
+            /* Deliberately NOT rt_kprintf: this runs inside
+             * spi_flash_disable_interrupts_caches_and_other_cpu(), where the
+             * scheduler has already been suspended. A console write that blocks
+             * for a FIFO slot can therefore never be scheduled out, and the
+             * probe deadlocks the very thing it was added to observe - measured,
+             * twice, with no output at all. ets_printf goes straight to the UART
+             * registers and cannot block, but it is also not wired to this
+             * console in a useful way.
+             *
+             * What is left is a counter the shell can inspect afterwards. */
+            xt_rt_flash_park_slow++;
             spins = 0;
         }
 
@@ -396,15 +461,20 @@ void IRAM_ATTR spi_flash_other_core_stop(void)
 void IRAM_ATTR spi_flash_other_core_resume(void)
 {
 #ifdef RT_USING_SMP
-    if (xt_rt_flash_depth > 1)
     {
-        /* Still inside an outer flash operation; leave the other core parked.
-         * No unlock either - this level never took the lock. */
-        xt_rt_flash_depth--;
-        return;
-    }
+        rt_uint32_t me = (rt_uint32_t)rt_hw_cpu_id();
 
-    xt_rt_flash_depth = 0;
+        if (xt_rt_flash_depth[me] > 1)
+        {
+            /* Still inside an outer flash operation on THIS core; leave the
+             * other core parked. No unlock either - this level never took the
+             * lock. */
+            xt_rt_flash_depth[me]--;
+            return;
+        }
+
+        xt_rt_flash_depth[me] = 0;
+    }
     xt_rt_flash_op = 0;
 
     /* Release only after op is clear, so the parked core has already been told

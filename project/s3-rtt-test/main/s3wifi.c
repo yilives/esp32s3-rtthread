@@ -241,6 +241,19 @@ static int cmd_wifi(int argc, char **argv)
      * Step 3 matters on its own: a reconnect that associates but never gets an
      * address looks healthy in the logs and is useless in practice.
      */
+    if (argc >= 2 && rt_strcmp(argv[1], "stop") == 0)
+    {
+        esp_err_t err = esp_wifi_stop();
+
+        if (err == ESP_OK)
+        {
+            rt_kprintf("s3wifi stop: PASS, interface down (flash window clear)\n");
+            return 0;
+        }
+        rt_kprintf("s3wifi stop: 0x%x (%s)\n", err, esp_err_to_name(err));
+        return -1;
+    }
+
     if (argc >= 2 && rt_strcmp(argv[1], "drop") == 0)
     {
         int waited_ms = 0;
@@ -653,6 +666,87 @@ static int cmd_wifi(int argc, char **argv)
     return 0;
 }
 MSH_CMD_EXPORT_ALIAS(cmd_wifi, s3wifi, bring up esp_wifi on the FreeRTOS shim);
+
+/*
+ * Suspend the station around a long flash operation, then put it back.
+ *
+ * Called by s3fs.c before a partition erase. Measured: with the station
+ * associated, `s3fs erase` stops after three flash windows and never returns;
+ * with `s3wifi stop` first, the same erase completes. The stack writes NVS from
+ * its own task, and those writes cannot share the cache-disable window with a
+ * multi-megabyte erase.
+ *
+ * Resume re-connects only if the station was actually associated before, so a
+ * `s3fs erase` on an idle interface does not start a connection nobody asked
+ * for. The credentials are the ones the last `s3wifi` used, which are held in
+ * RAM only.
+ */
+static int s_wifi_suspended_by_flash;
+static int s_wifi_was_connected;
+
+int s3_wifi_suspend_for_flash(void)
+{
+    esp_err_t err;
+
+    if (s_wifi_started == 0 || s_wifi_suspended_by_flash)
+    {
+        return -1;
+    }
+
+    s_wifi_was_connected = (s_wifi_got_ip != 0);
+
+    err = esp_wifi_stop();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED)
+    {
+        rt_kprintf("s3fs: esp_wifi_stop 0x%x, erase may stall\n", err);
+        return -1;
+    }
+
+    s_wifi_suspended_by_flash = 1;
+    s_wifi_started = 0;
+    s_wifi_got_ip = 0;
+    s_wifi_connected = 0;
+    return 0;
+}
+
+int s3_wifi_resume_after_flash(void)
+{
+    esp_err_t err;
+
+    if (!s_wifi_suspended_by_flash)
+    {
+        return -1;
+    }
+
+    s_wifi_suspended_by_flash = 0;
+
+    err = esp_wifi_start();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_STATE)
+    {
+        rt_kprintf("s3fs: esp_wifi_start 0x%x, run `s3wifi` again\n", err);
+        return -1;
+    }
+
+    s_wifi_started = 1;
+    s_wifi_started_once = RT_TRUE;
+
+    if (!s_wifi_was_connected)
+    {
+        rt_kprintf("s3fs: Wi-Fi restarted (was not connected)\n");
+        return 0;
+    }
+
+    s_wifi_retries = 0;
+    err = esp_wifi_connect();
+    if (err != ESP_OK)
+    {
+        rt_kprintf("s3fs: esp_wifi_connect 0x%x, run `s3wifi` again\n", err);
+        return -1;
+    }
+
+    rt_kprintf("s3fs: Wi-Fi restarted and reconnecting\n");
+    return 0;
+}
 
 #else /* !CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM */
 

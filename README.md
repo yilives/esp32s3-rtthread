@@ -29,8 +29,7 @@ esp32s3-rtthread/
 ├── esp-idf/                    ← overlay 到 ESP-IDF
 │   ├── components/rtthread/    ★ RT-Thread 的 IDF 组件 + FreeRTOS API 兼容层
 │   └── patches/
-│       ├── 0001-idf-core-smp-hooks.patch   16 个 IDF 文件的双核挂钩
-│       └── 0002-freertos-shim-iram.patch   4 个 shim 文件的 IRAM 属性
+│       └── 0001-idf-core-smp-hooks.patch   16 个 IDF 文件的双核挂钩
 ├── project/s3-rtt-test/        示例工程：自检 + Wi-Fi + BLE + FS + WDT + ULP
 ├── tools/                      构建、QEMU 脚本
 └── docs/                       移植说明、教程、排障
@@ -74,7 +73,7 @@ cd esp32s3-rtthread
 
 1. 把 `rt-thread/bsp/ESP/ESP32_S3/` 和 `rt-thread/libcpu/xtensa/` 复制进你的 RT-Thread 树
 2. 打 `rt-thread/patches/0001-kernel-smp-hooks.patch`（4 个内核文件）
-3. 把 `esp-idf/components/rtthread/` 复制进 IDF，并打两个 IDF patch
+3. 把 `esp-idf/components/rtthread/` 复制进 IDF，并打 IDF patch
 
 > 手工做也可以，见 [docs/BUILD.md](docs/BUILD.md)。
 
@@ -243,7 +242,7 @@ ULP 没有 TCB、没有优先级、不能调内核 API。它能做的是**发中
 | 限制 | 原因 | 影响 |
 | --- | --- | --- |
 | **BLE 在跑时连 Wi-Fi 会先拆掉 BLE** | NimBLE 加载时留下的状态破坏 4-way 握手（`assoc` 成功 6 ms 后被踢）。已排除射频竞争、coex 偏好、CPU 抢占；`s3ble off` 仍失败而 `s3ble deinit` 成功 | `s3wifi` 会自动先拆栈，连上后可 `s3ble` 重开（不影响链路）。实测 5/5 |
-| 文件系统只在开机挂载 | 格式化与无线栈的 flash 访问无法共存 | 运行中重新格式化可能挂死 |
+| 长 flash 操作要先停无线 | 无线栈自己的 NVS 写与长擦除交错，IPC 握手不再完成 | `s3fs erase` 已自动 suspend/resume Wi-Fi |
 | ULP ISR 不释放信号量 | 上述 IRAM 契约 | 最多 1 tick 延迟 |
 | 没有电源管理 | `CONFIG_PM_ENABLE` 关闭 | 功耗为 datasheet 最大值 |
 | 没有 OTA | 分区表只有一个 app 槽 | 升级必须接线 |

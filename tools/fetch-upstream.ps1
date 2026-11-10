@@ -58,8 +58,7 @@ if (-not (Test-Path (Join-Path $RtThreadPath '.git'))) {
 
 $patches = @(
     @{ Repo = $RtThreadPath; Name = '0001-kernel-smp-hooks.patch';     Path = "$repo\rt-thread\patches\0001-kernel-smp-hooks.patch" },
-    @{ Repo = $IdfPath;      Name = '0001-idf-core-smp-hooks.patch';   Path = "$repo\esp-idf\patches\0001-idf-core-smp-hooks.patch" },
-    @{ Repo = $IdfPath;      Name = '0002-freertos-shim-iram.patch';   Path = "$repo\esp-idf\patches\0002-freertos-shim-iram.patch" }
+    @{ Repo = $IdfPath;      Name = '0001-idf-core-smp-hooks.patch';   Path = "$repo\esp-idf\patches\0001-idf-core-smp-hooks.patch" }
 )
 
 if (-not $SkipPatches) {

@@ -75,6 +75,19 @@ static int s3_fs_read_only(void);
  * Weak definitions so this file links without s3wdt.c present.
  */
 void s3_wdt_pause(void) __attribute__((weak));
+
+/*
+ * Provided by s3wifi.c. Weak so a build without Wi-Fi still links.
+ *
+ * The radio has to be down while the partition is being erased. Measured: with
+ * Wi-Fi associated, `s3fs erase` stops after three flash windows and never
+ * returns; with `s3wifi stop` first, the same erase completes in one pass. The
+ * stack writes NVS from its own task, so its flash operations interleave with
+ * the erase's, and each interleave is a cache-disable window on both cores -
+ * one of them eventually loses the handshake.
+ */
+int s3_wifi_suspend_for_flash(void) __attribute__((weak));
+int s3_wifi_resume_after_flash(void) __attribute__((weak));
 void s3_wdt_resume(void) __attribute__((weak));
 
 static void fs_wdt_pause(void)
@@ -288,9 +301,22 @@ static int cmd_s3fs(int argc, char **argv)
         rt_kprintf("s3fs: erasing %u bytes at 0x%x ...\n",
                    (unsigned)part->size, (unsigned)part->address);
 
+        /* Radio down first: an associated station writes NVS from its own task,
+         * and those writes cannot share the flash window with a 1 MB erase. */
+        if (s3_wifi_suspend_for_flash != RT_NULL &&
+            s3_wifi_suspend_for_flash() == 0)
+        {
+            rt_kprintf("s3fs: Wi-Fi suspended for the erase\n");
+        }
+
         fs_wdt_pause();
         e = esp_partition_erase_range(part, 0, part->size);
         fs_wdt_resume();
+
+        if (s3_wifi_resume_after_flash != RT_NULL)
+        {
+            (void)s3_wifi_resume_after_flash();
+        }
         if (e != ESP_OK)
         {
             rt_kprintf("s3fs: erase failed 0x%x\n", e);

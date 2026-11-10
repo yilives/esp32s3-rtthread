@@ -199,7 +199,23 @@ s3fsbench: delete 32 files in 3512 ms (109 ms each)
 
 **小文件慢是正常的**，原因和调优见 [FILESYSTEM.md](FILESYSTEM.md)。
 
-### 4.5 分区坏了怎么办
+### 4.5 擦除分区（Wi-Fi 会先被停掉）
+
+```
+msh >s3fs unmount
+msh >s3fs erase
+s3fs: erasing 1048576 bytes at 0x310000 ...
+s3fs: Wi-Fi suspended for the erase
+s3fs: Wi-Fi restarted and reconnecting
+s3fs: erased; next `s3fs` will format and mount
+```
+
+**擦除期间无线栈必须停。** Wi-Fi 自己的 NVS 写会和长擦除交错，导致 flash 的
+跨核握手不再完成——表现为静默挂死，没有 panic 也没有看门狗。`s3fs erase` 现在
+自己做这件事，但如果手工调用 `esp_partition_erase_range()` 擦大块，要自己先
+`s3wifi stop`。详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 2 条。
+
+### 4.6 分区坏了怎么办
 
 如果 `s3fs` 报 `FAIL, cannot open ... errno=13 (Permission denied)`：
 

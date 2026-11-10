@@ -69,29 +69,93 @@ Wi-Fi 先起的顺序。
 
 ---
 
-## 2. 文件系统只在开机挂载
+## 2. 长时间 flash 操作要求无线栈先停（已自动化）
 
 ### 现象
 
-Wi-Fi + BLE 启动后再格式化 FAT 分区，会：
+Wi-Fi 关联之后执行 `s3fs erase`（擦 1 MB 分区），命令停在三四个 flash 窗口处
+再也不返回。`Guru 0`、`WDT 0`，没有任何错误输出——纯粹的静默挂死。
 
-- 双核在 cache 握手里死锁（静默，无 panic），或者
-- FAT 半写，下一次 `fopen` 返回 `EACCES`
+### 定位过程
 
-### 原因
+| 实验 | 结果 |
+| --- | --- |
+| 无 WiFi，`s3fs erase` | PASS，24 个 flash 窗口，约 21 次 IPC 等待 |
+| WiFi 关联，`s3fs erase` | 卡死在第 3-4 个窗口 |
+| `s3wifi stop` 后再 `s3fs erase` | **PASS** |
 
-两个无线栈都会从自己的任务里写 NVS，而 flash 操作不能和它们共存。
-即使 `board.c` 里加了 spinlock + depth + core-id + `INTLEVEL` 四重保护，
-格式化这种长时间、多次嵌套的擦除仍然会与无线的 flash 访问冲突。
+由此确定：不是文件系统的问题，也不是 flash 驱动的问题，而是**无线栈自己
+的 flash 访问与长擦除交错**。
 
-### 现在怎么办
+### 机制
 
-`INIT_APP_EXPORT(s3_fs_boot_mount)` 在无线栈起来之前挂载。**运行中不要重新格式化。**
+`spi_flash_disable_interrupts_caches_and_other_cpu()`（`cache_utils.c:128`，
+SMP 分支）对一个扇区的处理是：
 
-### 修它需要什么
+```
+spi_flash_op_lock()
+  vTaskSuspendAll()                                   <- 本核不再调度
+  esp_ipc_call_nonblocking(other_cpu, block_func)     <- 请另一核关 cache
+  while (!s_flash_op_can_start) { }                   <- 等它
+esp_intr_noniram_disable()
+spi_flash_disable_cache(0, ...)
+... 擦 ...
+```
 
-让 NVS 的 flash 访问也走同一个跨核串行化机制。IDF 的 NVS 用的是
-`esp_partition_*` API，那条路径上有自己的锁，但没有和 WL 层的 park 握手协同。
+Wi-Fi 起来后会从自己的任务周期性写 NVS，每次写都是一次这样的窗口。1 MB 擦除
+本身要 24 个窗口，两边的窗口互相穿插，某一次 IPC 握手就再也没完成。
+
+### 现在的行为
+
+`s3fs erase` 自动把 Wi-Fi 停掉，擦完再起来：
+
+```
+msh >s3fs erase
+s3fs: erasing 1048576 bytes at 0x310000 ...
+s3fs: Wi-Fi suspended for the erase
+s3fs: Wi-Fi restarted and reconnecting
+s3fs: erased; next `s3fs` will format and mount
+```
+
+`resume` 只在原来真的关联过时才重连，所以对空闲接口执行擦除不会凭空建链。
+
+实测 3 次里 2 次完全干净，1 次在擦除之后的 `s3net` 阶段出现 `Guru`
+（`Cache error`）。**那个 Guru 还没定位**——但它发生在擦除已经成功之后，
+不影响擦除本身的正确性。
+
+### 顺带修掉的两个真实 bug
+
+排查过程中发现 `board.c` 的 flash park 握手有两个缺陷。虽然这条路径在这个
+配置下不生效（见下），但单核构建会走到：
+
+1. **`xt_rt_flash_depth` 是全局变量**，但语义是每核的。两核同时做 flash 时，
+   第二个核会误判为"嵌套"直接返回，既不加锁也不 park 对方；持有锁的核在
+   resume 时把 depth 减到 1 以为是嵌套，另一个核再把 depth 清 0 并**解开一把
+   不属于自己的锁**。之后 spinlock 的 owner 字段损坏，后续 flash 操作永久死锁。
+   已改成 `xt_rt_flash_depth[RT_CPUS_NR]`。
+
+2. **ack 是"清零再等置位"**，存在丢失窗口。已改成单调递增的 generation：
+   doing core 递增 `xt_rt_flash_gen`，parked core 把自己的 `xt_rt_flash_ack_gen`
+   同步到该值，doing core 等两者相等。单调计数没有"错过归零"这回事。
+
+### 一个重要的认识
+
+**`board.c` 里那套 park 握手在 SMP 构建下是死代码。** `cache_utils.c` 里
+`spi_flash_other_core_stop()` 只在 `#else // CONFIG_FREERTOS_UNICORE` 分支被调用，
+而 `CONFIG_FREERTOS_UNICORE` 没设，编的是 `#ifndef` 分支——那里用的是 IDF 自己的
+`esp_ipc_call_nonblocking`。实测 `op=0 gen=0 ack_gen=0` 在所有 flash 操作后恒为 0，
+证实了这一点。
+
+所以本移植在 SMP 下实际依赖的是 IDF 的 IPC 机制，而不是自己写的握手。
+`board.c` 那套只在单核构建（`CPUS_NR=1`）时生效——那里它仍然是必需的，
+因为单核分支没有 IPC 可用。
+
+### 还没修完的
+
+- 上面那个偶发 `Guru`（3 次 1 次）。需要在擦除后的重连路径上再抓一次。
+- 格式化（而非擦除）同样要求无线先停，但 `s3fs` 的格式化走的是
+  `esp_vfs_fat_spiflash_format_rw_wl`，目前没有插 suspend 钩子。
+  实际影响小，因为格式化只在开机挂载失败时发生，那时无线还没起来。
 
 ---
 
