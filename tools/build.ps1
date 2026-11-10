@@ -93,6 +93,69 @@ if (-not $env:IDF_PYTHON_ENV_PATH -or
 # The BSP's scons scripts read this; keep it in step with IDF_PATH.
 $env:RTT_IDF_PATH = $env:IDF_PATH
 
+# Where the upstream RT-Thread checkout is. The project's CMakeLists resolves
+# this itself (flag, then environment, then a sibling directory), but exporting
+# it here means the flag does not have to be repeated for every idf.py
+# invocation, and it keeps the BSP and the kernel coming from the same tree.
+if (-not $env:RTTHREAD_ROOT) {
+    foreach ($candidate in @("$repo\..\rt-thread", "$repo\..\..\rt-thread")) {
+        if (Test-Path (Join-Path $candidate 'src\scheduler_mp.c')) {
+            $env:RTTHREAD_ROOT = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+}
+if ($env:RTTHREAD_ROOT) {
+    # Forward slashes, deliberately, and here rather than only in the project's
+    # CMakeLists.
+    #
+    # components/rtthread/CMakeLists.txt re-reads this variable straight out of
+    # the environment and interpolates it into INCLUDE_DIRS, which ESP-IDF then
+    # feeds to cmake's foreach() - where a backslash is an escape character. A
+    # Windows path like I:\RT_thread\_verify_rtt fails to configure with
+    #
+    #   Invalid character escape '\R'.
+    #
+    # A normalised copy in the project scope is overwritten by that re-read, so
+    # normalising the environment variable is what actually takes effect.
+    $env:RTTHREAD_ROOT = $env:RTTHREAD_ROOT -replace '\\', '/'
+    Write-Host "RTTHREAD_ROOT: $env:RTTHREAD_ROOT"
+} else {
+    Write-Host "RTTHREAD_ROOT: not found next to this repository - set it, or pass -DRTTHREAD_ROOT" -ForegroundColor Yellow
+}
+
+# idf.py needs a version string, and it takes it from this variable. It is
+# normally set by export.ps1; without it, the first configure in a clean tree
+# fails inside idf_component_manager with
+#
+#   TypeError: expected string or bytes-like object, got 'NoneType'
+#
+# because Version.coerce() is handed None. That only shows up on a fresh
+# checkout - an existing build/ directory never re-runs the code path - which is
+# exactly the situation a first-time user is in.
+if (-not $env:ESP_IDF_VERSION) {
+    $verFile = Join-Path $env:IDF_PATH 'version.txt'
+    $fromCmake = Join-Path $env:IDF_PATH 'tools\cmake\version.cmake'
+
+    if (Test-Path $verFile) {
+        $env:ESP_IDF_VERSION = (Get-Content $verFile -Raw).Trim()
+    } elseif (Test-Path $fromCmake) {
+        # Authoritative and local: the components' Python tooling wants a
+        # semantic version, and `git describe` on a fork branch yields a bare
+        # commit hash, which Version.coerce() rejects.
+        $maj = (Select-String -Path $fromCmake -Pattern 'set\(IDF_VERSION_MAJOR\s+(\d+)\)').Matches.Groups[1].Value
+        $min = (Select-String -Path $fromCmake -Pattern 'set\(IDF_VERSION_MINOR\s+(\d+)\)').Matches.Groups[1].Value
+        $pat = (Select-String -Path $fromCmake -Pattern 'set\(IDF_VERSION_PATCH\s+(\d+)\)').Matches.Groups[1].Value
+        if ($maj -and $min -and $pat) {
+            $env:ESP_IDF_VERSION = "$maj.$min.$pat"
+        }
+    }
+    if (-not $env:ESP_IDF_VERSION) {
+        throw "Cannot determine the ESP-IDF version: no version.txt and no tools/cmake/version.cmake under $env:IDF_PATH. Set ESP_IDF_VERSION (for example 6.1.0) and retry."
+    }
+    Write-Host "ESP_IDF_VERSION: $env:ESP_IDF_VERSION (derived)"
+}
+
 # esptool wants a ROM ELF directory to build and verify images on some versions.
 if (-not $env:ESP_ROM_ELF_DIR) {
     $romElf = Join-Path $tools 'esp-rom-elfs'
@@ -112,68 +175,43 @@ cmd /c chcp 65001 | Out-Null
 # Tool directories come before the inherited PATH so a system-wide cmake or ninja
 # cannot shadow the ones ESP-IDF was installed against.
 
-function Find-Tool($pattern) {
-    if (-not (Test-Path $tools)) { return $null }
-    $d = Get-ChildItem $tools -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-         Sort-Object Name -Descending | Select-Object -First 1
-    if ($d) { return $d.FullName }
+# Find the directory containing a given toolchain executable.
+#
+# The install layout nests differently per tool - xtensa lives at
+# tools/xtensa-esp-elf/<version>/xtensa-esp-elf/bin, ninja at
+# tools/ninja/<version>/ninja.exe - so the depth is not something to guess.
+# Searching for the executable is the only form that survives an IDF upgrade.
+function Find-ToolBin($installDirPattern, $exeName) {
+    $root = Get-ChildItem $tools -Directory -Filter $installDirPattern -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $root) { return $null }
+
+    $exe = Get-ChildItem $root.FullName -Recurse -Filter $exeName -File -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    if ($exe) { return $exe.DirectoryName }
     return $null
 }
 
 $pathParts = @()
 
-# Xtensa: the target's own toolchain. The versioned directory contains another
-# directory (xtensa-esp-elf) whose bin/ is the one on PATH.
-$xtensa = Find-Tool 'xtensa-esp-elf'
-if ($xtensa) {
-    $inner = Get-ChildItem $xtensa -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($inner) {
-        $p = Join-Path $inner.FullName 'bin'
-        if (Test-Path $p) { $pathParts += $p }
-    }
-}
-
-# riscv32: only needed for the ULP co-processor program. That build is a nested
-# CMake project which looks riscv32-esp-elf-gcc up on PATH, so without this the
-# main build fails inside the nested configure step with
-# "CMAKE_C_COMPILER riscv32-esp-elf-gcc is not a full path".
-$riscv = Find-Tool 'riscv32-esp-elf'
-if ($riscv) {
-    $inner = Get-ChildItem $riscv -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($inner) {
-        $p = Join-Path $inner.FullName 'bin'
-        if (Test-Path $p) { $pathParts += $p }
-    }
-}
-
-$gdb = Find-Tool 'xtensa-esp-elf-gdb'
-if ($gdb) {
-    $inner = Get-ChildItem $gdb -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($inner) {
-        $p = Join-Path $inner.FullName 'bin'
-        if (Test-Path $p) { $pathParts += $p }
-    }
-}
-
-foreach ($pair in @(@('cmake', 'bin'), @('ninja', ''), @('ccache', ''), @('qemu-xtensa', 'qemu\bin'))) {
-    $d = Find-Tool $pair[0]
-    if (-not $d) { continue }
-
-    if ($pair[1] -eq '') {
-        # The tool may sit directly in the versioned directory or one level in.
-        $exe = Get-ChildItem $d -Recurse -Depth 2 -Filter '*.exe' -ErrorAction SilentlyContinue |
-               Select-Object -First 1
-        if ($exe) { $pathParts += $exe.DirectoryName }
-        continue
-    }
-
-    $cand = Join-Path $d $pair[1]
-    if (Test-Path $cand) { $pathParts += $cand; continue }
-
-    $inner = Get-ChildItem $d -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($inner) {
-        $cand = Join-Path $inner.FullName $pair[1]
-        if (Test-Path $cand) { $pathParts += $cand }
+foreach ($spec in @(
+    @('xtensa-esp-elf',      'xtensa-esp32s3-elf-gcc.exe'),
+    @('riscv32-esp-elf',     'riscv32-esp-elf-gcc.exe'),
+    @('xtensa-esp-elf-gdb',  'xtensa-esp32s3-elf-gdb.exe'),
+    @('cmake',               'cmake.exe'),
+    @('ninja',               'ninja.exe'),
+    @('ccache',              'ccache.exe'),
+    @('qemu-xtensa',         'qemu-system-xtensa.exe')
+)) {
+    $dir = Find-ToolBin $spec[0] $spec[1]
+    if ($dir) {
+        $pathParts += $dir
+    } else {
+        # riscv32 is only needed for the ULP program and qemu only for the QEMU
+        # gate; the others are mandatory.
+        if ($spec[0] -in @('xtensa-esp-elf', 'cmake', 'ninja')) {
+            throw "Cannot find $($spec[1]) under $tools. Run install.ps1 for target $Target."
+        }
     }
 }
 

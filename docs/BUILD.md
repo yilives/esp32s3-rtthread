@@ -128,6 +128,46 @@ s3_rtt_test.bin binary size 0x... bytes
 | `ulp_riscv.h: No such file` | `ulp` 在 `PRIV_REQUIRES` 里 | 改成 `REQUIRES`（见 [ULP.md](ULP.md)） |
 | `region 'dram0_0_seg' overflowed` | RT-Thread 堆太大 | 调小 `CONFIG_IDF_RTTHREAD_HEAP_SIZE` |
 
+### 关于 `RTTHREAD_ROOT`
+
+项目要找到上游 RT-Thread 树。解析顺序：
+
+1. `-DRTTHREAD_ROOT=<path>`（idf.py 命令行）
+2. 环境变量 `RTTHREAD_ROOT`
+3. 仓库旁边的 `../rt-thread`
+
+**不要手写绝对路径进 CMakeLists。** 之前这里写死了 `I:/RT_thread/rt-thread`，
+后果不是报错而是**静默用错树**——CMake 发现那个路径存在就直接用了，
+你以为在验证 A 树，实际编的是 B 树。这是验证交付流程时才发现的。
+
+`build.ps1` 会把 `RTTHREAD_ROOT` 转成**正斜杠**再导出。这不是洁癖：
+`components/rtthread/CMakeLists.txt` 从环境变量直接读它并塞进 `INCLUDE_DIRS`，
+ESP-IDF 再传给 `foreach()`，而反斜杠在 CMake 里是转义符——
+
+```
+Invalid character escape '\R'.
+```
+
+### 关于 `ESP_IDF_VERSION`
+
+`build.ps1` 现在会自己推导它（`tools/cmake/version.cmake` → `6.1.0`）。
+不设的话，全新检出的第一次 configure 会在 `idf_component_manager` 里崩：
+
+```
+TypeError: expected string or bytes-like object, got 'NoneType'
+```
+
+只影响第一次 configure——已有 `build/` 目录时不会走那段代码。
+
+### 关于 `sdkconfig.defaults`
+
+它是从一台**真机验证过的 `sdkconfig` 完整复制**的，不是手工挑的几十行。
+
+手工版本漏掉了整个 ULP 配置块，导致全新检出编出来的镜像里 `s3ulp` 命令在
+但 ULP 二进制不存在。生成自实际跑过的配置比手挑的可靠。
+
+IDF 会忽略与目标无关或自动推导的项，所以带上它们无害。
+
 ### 关于 `RTT_IDF_PATH`
 
 如果你不用 `build.ps1` 而直接跑 `idf.py`，BSP 的 scons 脚本会找不到 IDF 头文件。

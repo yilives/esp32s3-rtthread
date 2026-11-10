@@ -7,13 +7,13 @@
 # Usage:
 #   .\fetch-upstream.ps1 -RtThreadPath I:\RT_thread\rt-thread -IdfPath I:\RT_thread\esp-idf-rtt
 #   .\fetch-upstream.ps1 -RtThreadPath ... -IdfPath ... -SkipPatches
-#   .\fetch-upstream.ps1 -RtThreadPath ... -IdfPath ... -Force
+#   .\fetch-upstream.ps1 -RtThreadPath ... -IdfPath ... -KeepLocal
 
 param(
     [Parameter(Mandatory = $true)][string]$RtThreadPath,
     [Parameter(Mandatory = $true)][string]$IdfPath,
     [switch]$SkipPatches,
-    [switch]$Force
+    [switch]$KeepLocal
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,14 +87,22 @@ if (-not $SkipPatches) {
 #
 # Nothing above this point has modified the tree.
 
+# Copy the port over the upstream tree.
+#
+# These files ARE the port, so copying is the whole point and a file that
+# differs from what is already there is the normal case, not a conflict to
+# protect against. An earlier version skipped differing files unless -Force was
+# given, which meant a user following the README got a tree containing none of
+# the actual changes - measured on a clean worktree: nine of the component's
+# files, including ft_ipc.c and ft_core.h, were silently left at the upstream
+# version, and the build would have lacked the IRAM fixes.
+#
+# -KeepLocal inverts the default for anyone who has edited the tree by hand.
 function Copy-Tree($from, $to) {
     if (-not (Test-Path $from)) { Fail "source missing: $from" }
 
-    if ((Test-Path $to) -and -not $Force) {
-        Write-Host "  exists  $to (use -Force to overwrite)" -ForegroundColor Yellow
-        # Still copy files that are missing, so a partially-populated tree gets
-        # completed without clobbering local edits.
-    }
+    $copied = 0
+    $skipped = @()
 
     Get-ChildItem $from -Recurse -File | Where-Object {
         $_.FullName -notmatch '__pycache__'
@@ -102,16 +110,24 @@ function Copy-Tree($from, $to) {
         $rel = $_.FullName.Substring($from.Length).TrimStart('\')
         $dst = Join-Path $to $rel
         New-Item -ItemType Directory -Path (Split-Path $dst) -Force | Out-Null
-        if ((Test-Path $dst) -and -not $Force) {
+
+        if ($KeepLocal -and (Test-Path $dst)) {
             $a = (Get-FileHash $_.FullName).Hash
             $b = (Get-FileHash $dst).Hash
             if ($a -ne $b) {
-                Write-Host "  differs $rel" -ForegroundColor Yellow
+                $skipped += $rel
                 return
             }
         }
+
         Copy-Item $_.FullName $dst -Force
+        $copied++
     }
+
+    if ($skipped.Count -gt 0) {
+        Write-Host "  kept local: $($skipped -join ', ')" -ForegroundColor Yellow
+    }
+    Info "$copied file(s) -> $to"
 }
 
 Write-Host "Copying RT-Thread BSP and architecture layer..."
