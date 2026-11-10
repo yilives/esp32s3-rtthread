@@ -91,7 +91,7 @@ Wi-Fi 先起的顺序。
 
 修法：`s3fs erase` 和 `s3fsbench` 自动停无线，做完再恢复。
 
-**缺陷 B：本核的 IRAM 中断在 cache 关闭时仍然会来。**
+**缺陷 B：两核的 IRAM 中断在 cache 关闭时都仍然会来。**
 
 `esp_intr_noniram_disable()` 只屏蔽非 IRAM 中断，它的契约是"带
 `ESP_INTR_FLAG_IRAM` 的 handler 继续跑，但它们只碰 IRAM"。**本移植违反了这个契约
@@ -105,11 +105,19 @@ PC 0x4200bcbe  rt_sem_trytake   (flash)
   <- semphr_give_from_isr_wrapper <- BLE controller
 ```
 
+S3 的 flash cache 是**共享**的（`SOC_IDCACHE_PER_CORE` 未定义，只有 ESP32
+有每核 cache），所以做 flash 的核一关 cache，另一核也没 cache 了。
+这意味着**两边都必须聋**：
+
+- 做 flash 的核：`spi_flash_disable_interrupts_caches_and_other_cpu()` 里
+  关 cache 前 `rsil 15`，开 cache 后恢复 `PS`
+- 被 park 的核：`spi_flash_op_block_func()` 里同样 `rsil 15`，
+  等 `s_flash_op_complete` 之后、cache 恢复完再恢复 `PS`
+
+只修一边时崩溃变稀有但没消失——这是第二次迭代才发现的，第一次只改了做 flash 的核。
+
 把这些函数搬进 IRAM 是错的方向——它一路通到 `rt_sem_take`、
 `rt_susp_list_dequeue`、`rt_thread_resume`，等于搬半个内核。**要关的是窗口，不是调用图。**
-
-修法（`cache_utils.c`）：关 cache 前 `rsil 15` 屏蔽本核全部可屏蔽中断，
-开 cache 后再恢复 `PS`。NMI 和 debug level 不受影响，和任何 Xtensa 上一样。
 
 **缺陷 C：`board.c` 的 park 握手有两个 bug。**
 
@@ -150,6 +158,62 @@ PC 0x4200bcbe  rt_sem_trytake   (flash)
 格式化（而非擦除）同样要求无线先停，但 `s3fs` 的格式化走
 `esp_vfs_fat_spiflash_format_rw_wl`，目前没有插 suspend 钩子。实际影响小，
 因为格式化只在开机挂载失败时发生，那时无线还没起来。
+
+---
+
+## 2b. 单核构建能用，但 ULP + Wi-Fi 不能共存
+
+### 构建
+
+单核是支持的，需要三处同时改，缺一个都编不过或者跑不起来：
+
+```
+sdkconfig:      CONFIG_FREERTOS_UNICORE=y
+                CONFIG_FREERTOS_NUMBER_OF_CORES=1
+rtconfig.h:     /* #define RT_USING_SMP */     <- 必须注释掉，不能只改 CPUS_NR
+                #define RT_CPUS_NR          1
+```
+
+**`RT_USING_SMP` 不会跟着 `RT_CPUS_NR` 自动关。** 只把 `RT_CPUS_NR` 改成 1
+而留着 `RT_USING_SMP`，会编进 `scheduler_mp.c` 但 `struct rt_thread` 里没有
+`cpus_lock_nest`（它由 `RT_USING_SMP` 控制），结果是 `cpu_mp.c` 编译失败。
+
+还有一个坑：`components/rtthread/CMakeLists.txt` 在 **configure 时**读
+`rtconfig.h` 决定编 `cpu_mp.c` 还是 `cpu_up.c`。只改 `rtconfig.h` 不会触发
+reconfigure，会继续用缓存的选择。改完要 `idf.py reconfigure`：
+
+```
+-- rtthread: RT_USING_SMP=FALSE (from .../rtconfig.h)
+```
+
+### 能力差异（实测）
+
+单核构建下：
+
+| 场景 | 结果 |
+| --- | --- |
+| 启动 + `s3rt` 自检 | PASS |
+| 文件系统挂载 / 读 / 基准 | PASS（基准还更快：868 ms vs 4379 ms） |
+| Wi-Fi 连接 + TCP | PASS |
+| BLE 广播 + GATT | PASS |
+| **Wi-Fi 起来后 `s3ulp`** | **WDT 复位** |
+| **`s3wifi stop` 之后 `s3ulp`** | **超时，no completion** |
+| **Wi-Fi 从未初始化时 `s3ulp`** | **PASS，968 µs** |
+
+也就是说：**ULP 和 Wi-Fi 在单核上互斥**，而且是单向的——Wi-Fi 初始化过
+（哪怕已经 stop）之后，ULP 的中断就再也到不了 RT-Thread。
+
+挂死时 `Saved PC: 0x4037eea9 wDev_ProcessFiq`，即 Wi-Fi 的 ISR 在处理。
+单核下 ULP 的 RTC 中断和 Wi-Fi 的 ISR 在同一个核上竞争，而 ULP 的等待方
+是按 tick 轮询的——Wi-Fi ISR 占满 CPU 时 tick 涨不起来，轮询永远看不到
+`completions` 变化，最终被看门狗复位。
+
+双核没有这个问题，因为 ULP 的等待方在 CPU1、Wi-Fi 在 CPU0。
+
+### 结论
+
+单核构建可以作为"没有 ULP 需求"的降级配置使用。需要 ULP 就必须双核。
+这不是回归——`docs/` 从头到尾没说过单核支持 ULP。
 
 ---
 
@@ -300,20 +364,13 @@ RT-Thread 生态里的网络组件（`webclient`、`mqtt`、`netutils`）用不�
 
 ---
 
-## 10. 单核路径的偶发 Guru
+## 10. 单核路径的 ULP + Wi-Fi 挂死
 
-### 现象
+原来的记录是"单核偶发 Guru，未定位"。现在定位了，见 [2b](#2b-单核构建能用但-ulp--wi-fi-不能共存)：
+不是偶发，是**必现**——Wi-Fi 一初始化过，ULP 的中断就再也到不了 RT-Thread，
+表现是被看门狗复位（Wi-Fi 在跑）或轮询超时（Wi-Fi 已 stop）。
 
-单核构建下的完整测试，6 次里出现过 1 次 `Guru Meditation`（其余 5 次全绿）。
-
-### 状态
-
-**未定位。** SMP 路径 3/3 全绿，单核路径 5/6。
-
-### 可能
-
-目击次数太少，无法区分是竞态还是别的原因。如果需要单核长期运行，
-建议先做冷启动 soak 测试确认。
+双核不受影响。
 
 ---
 
@@ -322,7 +379,7 @@ RT-Thread 生态里的网络组件（`webclient`、`mqtt`、`netutils`）用不�
 | # | 限制 | 严重度 | 可行的修法 |
 | --- | --- | --- | --- |
 | 1 | Wi-Fi 必须先于 BLE | 中 | 让 NimBLE 等 coex 就绪 |
-| 2 | 文件系统只在开机挂载 | 中 | NVS 的 flash 访问走同一串行化 |
+| 2 | 长 flash 操作要先停无线 | 中 | 已自动化：`s3fs erase` / `s3fsbench` 停无线，flash 窗口两核都屏蔽全部中断 |
 | 3 | ULP ISR 不释放信号量 | 低 | 验证 RTC 中断时的 cache 状态 |
 | 4 | 无中断看门狗 | 中 | 接 level-4/5 定时器 |
 | 5 | 无电源管理 | 高（电池场景） | 选定一套 PM 框架 |
@@ -330,4 +387,5 @@ RT-Thread 生态里的网络组件（`webclient`、`mqtt`、`netutils`）用不�
 | 7 | 无 DFS 设备节点 | 低 | 开 `RT_USING_DFS` |
 | 8 | 无 SAL | 中 | SAL → lwIP 适配 |
 | 9 | 无 POSIX | 中 | 开 `RT_USING_POSIX`，解决与 esp_libc 的冲突 |
-| 10 | 单核偶发 Guru | 低 | soak 测试定位 |
+| 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
+| 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |

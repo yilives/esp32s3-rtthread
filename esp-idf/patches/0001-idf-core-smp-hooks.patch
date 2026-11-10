@@ -468,10 +468,47 @@ index f1080d20b1..4067917153 100644
  // for strlcpy
  #include <bsd/string.h>
 diff --git a/components/spi_flash/cache_utils.c b/components/spi_flash/cache_utils.c
-index e3b9577488..1c5b9e6b92 100644
+index e3b9577488..99f1127012 100644
 --- a/components/spi_flash/cache_utils.c
 +++ b/components/spi_flash/cache_utils.c
-@@ -184,6 +184,46 @@ void IRAM_ATTR spi_flash_disable_interrupts_caches_and_other_cpu(void)
+@@ -88,6 +88,27 @@ void IRAM_ATTR spi_flash_op_block_func(void *arg)
+ #else
+     vTaskSuspendAll();
+ #endif // #if ( ( CONFIG_FREERTOS_SMP ) && ( !CONFIG_FREERTOS_UNICORE ) )
++    /*
++     * Mask EVERY maskable interrupt on this core too, for the same reason as the
++     * doing core: on this chip the flash cache is shared (SOC_IDCACHE_PER_CORE
++     * is not defined for the S3), so when the other core turns it off this core
++     * has no cache either - while esp_intr_noniram_disable() deliberately leaves
++     * ESP_INTR_FLAG_IRAM handlers running. Those handlers call into the FreeRTOS
++     * shim, which is flash code, so they fault:
++     *
++     *   Guru Meditation Error: Core 0 panic'ed (Cache error).
++     *   Cache disabled but cached memory region accessed
++     *   PC 0x4200bcbe  rt_sem_trytake  (flash)
++     *     <- ft_ipc_give_isr <- xQueueGiveFromISR <- BLE controller
++     *
++     * The doing core was fixed first and the crashes became rarer but did not
++     * stop, because this side of the handshake was still open. Both ends have to
++     * be deaf for the window to be closed.
++     */
++    unsigned int ps_saved;
++
++    __asm__ volatile("rsil %0, 15" : "=r"(ps_saved));
++
+     // Restore interrupts that aren't located in IRAM
+     esp_intr_noniram_disable();
+     uint32_t cpuid = (uint32_t) arg;
+@@ -110,6 +131,8 @@ void IRAM_ATTR spi_flash_op_block_func(void *arg)
+     // Re-enable scheduler
+     xTaskResumeAll();
+ #endif // #if ( ( CONFIG_FREERTOS_SMP ) && ( !CONFIG_FREERTOS_UNICORE ) )
++    // Only now, with the cache back on, may interrupts be delivered again.
++    __asm__ volatile("wsr %0, ps; rsync" :: "r"(ps_saved));
+ }
+ 
+ /*
+@@ -184,6 +207,46 @@ void IRAM_ATTR spi_flash_disable_interrupts_caches_and_other_cpu(void)
          }
      }
  
@@ -518,7 +555,7 @@ index e3b9577488..1c5b9e6b92 100644
      // Kill interrupts that aren't located in IRAM
      esp_intr_noniram_disable();
      // This CPU executes this routine, with non-IRAM interrupts and the scheduler
-@@ -211,6 +251,22 @@ void IRAM_ATTR spi_flash_enable_interrupts_caches_and_other_cpu(void)
+@@ -211,6 +274,22 @@ void IRAM_ATTR spi_flash_enable_interrupts_caches_and_other_cpu(void)
  
      // Re-enable cache. After this, cache (flash and external RAM) should work again.
      spi_flash_restore_cache(cpuid, s_flash_op_cache_state[cpuid]);
