@@ -325,6 +325,19 @@ volatile rt_uint32_t xt_rt_flash_ack_gen;         /* published by the parked cor
 /* Incremented when the handshake takes longer than ~1 s. Diagnostic only: it is
  * counted rather than printed because the console cannot be used here. */
 volatile rt_uint32_t xt_rt_flash_park_slow;
+
+/*
+ * Interrupt level saved across a flash window, and whether it is currently
+ * raised.
+ *
+ * The window masks every maskable interrupt (PS.INTLEVEL = 15) rather than only
+ * the non-IRAM ones, because this port's IRAM handlers call into flash-resident
+ * shim code - measured as a Cache error with PC in rt_sem_trytake, reached from
+ * the Bluetooth controller's ISR. The save/restore pair lives in cache_utils.c,
+ * next to the cache calls it protects; these are only the storage.
+ */
+volatile rt_uint32_t xt_rt_flash_saved_intlevel;
+volatile rt_uint32_t xt_rt_flash_intlevel_held;
 #endif
 
 void IRAM_ATTR spi_flash_other_core_stop(void)

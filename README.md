@@ -242,7 +242,7 @@ ULP 没有 TCB、没有优先级、不能调内核 API。它能做的是**发中
 | 限制 | 原因 | 影响 |
 | --- | --- | --- |
 | **BLE 在跑时连 Wi-Fi 会先拆掉 BLE** | NimBLE 加载时留下的状态破坏 4-way 握手（`assoc` 成功 6 ms 后被踢）。已排除射频竞争、coex 偏好、CPU 抢占；`s3ble off` 仍失败而 `s3ble deinit` 成功 | `s3wifi` 会自动先拆栈，连上后可 `s3ble` 重开（不影响链路）。实测 5/5 |
-| 长 flash 操作要先停无线 | 无线栈自己的 NVS 写与长擦除交错，IPC 握手不再完成 | `s3fs erase` 已自动 suspend/resume Wi-Fi |
+| 长 flash 操作要先停无线 | 无线栈自己的 NVS 写与长擦除交错，IPC 握手不再完成；且 IRAM 中断在 cache 关闭时会调进 flash | `s3fs erase` / `s3fsbench` 已自动停无线，flash 窗口内屏蔽全部中断 |
 | ULP ISR 不释放信号量 | 上述 IRAM 契约 | 最多 1 tick 延迟 |
 | 没有电源管理 | `CONFIG_PM_ENABLE` 关闭 | 功耗为 datasheet 最大值 |
 | 没有 OTA | 分区表只有一个 app 槽 | 升级必须接线 |

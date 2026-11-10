@@ -467,6 +467,80 @@ index f1080d20b1..4067917153 100644
  #if __has_include(<bsd/string.h>)
  // for strlcpy
  #include <bsd/string.h>
+diff --git a/components/spi_flash/cache_utils.c b/components/spi_flash/cache_utils.c
+index e3b9577488..1c5b9e6b92 100644
+--- a/components/spi_flash/cache_utils.c
++++ b/components/spi_flash/cache_utils.c
+@@ -184,6 +184,46 @@ void IRAM_ATTR spi_flash_disable_interrupts_caches_and_other_cpu(void)
+         }
+     }
+ 
++    /*
++     * Mask EVERY maskable interrupt on this core, then re-enable the non-IRAM
++     * ones afterwards.
++     *
++     * esp_intr_noniram_disable() enforces the contract "handlers registered with
++     * ESP_INTR_FLAG_IRAM keep running, and they only touch IRAM". This port
++     * breaks the second half of that contract: IDF's IRAM handlers call into the
++     * FreeRTOS compatibility layer, which is ordinary flash code. Measured, with
++     * only the non-IRAM interrupts masked and the cache already off:
++     *
++     *   Guru Meditation Error: Core 0 panic'ed (Cache error).
++     *   Cache disabled but cached memory region accessed
++     *   PC 0x4200bcbe  rt_sem_trytake   (flash)
++     *     <- ft_ipc_give_isr <- xQueueGiveFromISR
++     *     <- semphr_give_from_isr_wrapper <- BLE controller
++     *
++     * Pushing that call graph into IRAM is the wrong fix - it reaches rt_sem_take,
++     * rt_susp_list_dequeue and rt_thread_resume, i.e. half the kernel. Closing
++     * the window is the fix.
++     *
++     * PS.INTLEVEL = 15 masks all maskable interrupts on this core. NMI and the
++     * debug level are unaffected, as on any Xtensa. The window is not nested by
++     * construction (s_flash_op_cpu is asserted), so a plain save/restore pair is
++     * enough; xt_rt_flash_intlevel_held guards against a re-entry that the assert
++     * would have caught in a debug build.
++     */
++    {
++        extern volatile uint32_t xt_rt_flash_saved_intlevel;
++        extern volatile uint32_t xt_rt_flash_intlevel_held;
++
++        if (!xt_rt_flash_intlevel_held)
++        {
++            unsigned int ps_saved;
++
++            __asm__ volatile("rsil %0, 15" : "=r"(ps_saved));
++            xt_rt_flash_saved_intlevel = (uint32_t)ps_saved;
++            xt_rt_flash_intlevel_held = 1;
++        }
++    }
++
+     // Kill interrupts that aren't located in IRAM
+     esp_intr_noniram_disable();
+     // This CPU executes this routine, with non-IRAM interrupts and the scheduler
+@@ -211,6 +251,22 @@ void IRAM_ATTR spi_flash_enable_interrupts_caches_and_other_cpu(void)
+ 
+     // Re-enable cache. After this, cache (flash and external RAM) should work again.
+     spi_flash_restore_cache(cpuid, s_flash_op_cache_state[cpuid]);
++
++    /* Restore the interrupt level saved in the matching disable. Done before the
++     * IPC task is released so that interrupts are live again by the time the
++     * other core resumes. */
++    {
++        extern volatile uint32_t xt_rt_flash_saved_intlevel;
++        extern volatile uint32_t xt_rt_flash_intlevel_held;
++
++        if (xt_rt_flash_intlevel_held)
++        {
++            unsigned int ps_saved = (unsigned int)xt_rt_flash_saved_intlevel;
++
++            xt_rt_flash_intlevel_held = 0;
++            __asm__ volatile("wsr %0, ps; rsync" :: "r"(ps_saved));
++        }
++    }
+ #if SOC_IDCACHE_PER_CORE
+     //only needed if cache(s) is per core
+     const uint32_t other_cpuid = (cpuid == 0) ? 1 : 0;
 diff --git a/components/spi_flash/flash_mmap.c b/components/spi_flash/flash_mmap.c
 index 3ac89b5dde..38cd889c57 100644
 --- a/components/spi_flash/flash_mmap.c

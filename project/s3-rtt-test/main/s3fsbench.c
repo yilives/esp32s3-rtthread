@@ -316,7 +316,7 @@ static int bench_small(rt_uint32_t *out_create_ms, rt_uint32_t *out_overwrite_ms
 
 /* ----------------------------------------------------------------- command -- */
 
-static int cmd_s3fsbench(int argc, char **argv)
+static int s3fsbench_run(int argc, char **argv)
 {
     /*
      * Optional selector, so one test can run without the others.
@@ -446,5 +446,100 @@ static int s3_bench_run(rt_bool_t do_write, rt_bool_t do_read, rt_bool_t do_smal
 
     return 0;
 }
+
+/*
+ * The benchmark runs long enough to trip the hardware watchdog once both radios
+ * are up.
+ *
+ * Measured: `s3fsbench write` takes about 0.9 s with the radio idle, but with
+ * Wi-Fi associated and BLE advertising every flash window has to wait for the
+ * IPC callback while the radio tasks compete for the CPU, and the run exceeds
+ * the 5 s watchdog timeout - the board resets mid-benchmark with
+ * `rst:0x7 (TG0WDT_SYS_RST)` and the numbers are lost.
+ *
+ * Pausing the feeder for the duration is what `s3fs` already does around mount
+ * and format. The benchmark is an instrument, not a service: it is acceptable
+ * for it to declare "do not judge liveness during this measurement", and it is
+ * not acceptable to lose the measurement.
+ *
+ * Weak, so a build without s3wdt still links.
+ */
+void s3_wdt_pause(void) __attribute__((weak));
+void s3_wdt_resume(void) __attribute__((weak));
+
+/* Provided by s3wifi.c. See the note below for why the radio has to go down. */
+int s3_wifi_suspend_for_flash(void) __attribute__((weak));
+int s3_wifi_resume_after_flash(void) __attribute__((weak));
+
+/* Provided by s3ble.c. */
+rt_bool_t s3ble_is_up(void) __attribute__((weak));
+rt_err_t s3ble_shutdown_quiet(void) __attribute__((weak));
+
+static int s3fsbench_run(int argc, char **argv);
+
+static int cmd_s3fsbench(int argc, char **argv)
+{
+    int rc;
+    int radio_down = 0;
+    int ble_down = 0;
+
+    /*
+     * Stop the radio for the duration.
+     *
+     * Measured: `s3fsbench write` finishes in 1045 ms with the radio idle, but
+     * with Wi-Fi associated and BLE advertising it has not produced a single
+     * number after 200 s. Pausing the watchdog first turned that into a silent
+     * hang rather than a reset, which is how it was finally obvious that this is
+     * not slowness - it is the same interleaving failure that `s3fs erase` hits
+     * (docs/KNOWN-ISSUES.md section 2): the radio writes NVS from its own task,
+     * and those writes cannot share the cache-disable window with a long run of
+     * flash writes.
+     *
+     * So the benchmark takes the same medicine as the erase: radio down, measure,
+     * radio back up.
+     */
+    if (s3_wifi_suspend_for_flash != RT_NULL &&
+        s3_wifi_suspend_for_flash() == 0)
+    {
+        radio_down = 1;
+        rt_kprintf("s3fsbench: Wi-Fi suspended for the measurement\n");
+    }
+
+    /*
+     * Stop BLE too, for the same reason and on the same evidence.
+     *
+     * Suspending only the station was measured and is not enough: with BLE still
+     * advertising, `s3fsbench write` still produced no numbers. Both radios write
+     * NVS from their own tasks, and the benchmark is 79 writes and 71 erases back
+     * to back - far denser than the 24 windows an erase needs.
+     */
+    if (s3ble_is_up != RT_NULL && s3ble_is_up() &&
+        s3ble_shutdown_quiet != RT_NULL && s3ble_shutdown_quiet() == RT_EOK)
+    {
+        ble_down = 1;
+        rt_kprintf("s3fsbench: BLE unloaded for the measurement "
+                   "(run `s3ble` again afterwards)\n");
+    }
+
+    if (s3_wdt_pause != RT_NULL)
+    {
+        s3_wdt_pause();
+    }
+
+    rc = s3fsbench_run(argc, argv);
+
+    if (s3_wdt_resume != RT_NULL)
+    {
+        s3_wdt_resume();
+    }
+
+    if (radio_down && s3_wifi_resume_after_flash != RT_NULL)
+    {
+        (void)s3_wifi_resume_after_flash();
+    }
+
+    return rc;
+}
+
 MSH_CMD_EXPORT_ALIAS(cmd_s3fsbench, s3fsbench,
                      measure FAT write/read/small-file throughput);
