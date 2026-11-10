@@ -8,6 +8,23 @@
 
 ---
 
+## 文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `env.ps1` | **共享的环境发现**：工具链、IDF 树、python venv、IDF 版本、RT-Thread 树、PATH |
+| `build.ps1` | 构建（`-NoPsram` 出 QEMU 变体，`-Qemu` 构建后直接跑 QEMU）|
+| `qemu.ps1` | 跑 QEMU 并做 PASS/FAIL 判定 |
+| `qemu-gdb.ps1` | 起 QEMU 并冻结等 GDB 附加 |
+| `fetch-upstream.ps1` | 把本仓库的改动应用到上游树 |
+
+前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
+它们漂移了：两份还固定着工具版本目录（`esp-15.2.0_20251204`、`cmake\4.0.3`、
+`ninja\1.12.1`、`esp_develop_9.2.2_20260417`），IDF 升级一次就全废；其中一份
+拼出的 PATH 少一层目录，报"编译器找不到"而它指的目录其实是存在的。
+
+`env.ps1` 里没有任何版本号——它按**可执行文件名**搜索。
+
 ## 参数
 
 | 参数 | 必填 | 说明 |

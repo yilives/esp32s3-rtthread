@@ -11,27 +11,15 @@ $repo  = Split-Path -Parent $PSScriptRoot
 $proj  = if ($env:S3_PROJECT) { $env:S3_PROJECT } else { Join-Path $repo 'project\s3-rtt-test' }
 $bd    = Join-Path $proj 'build-qemu'
 
-$tools = if ($env:ESP_IDF_TOOLS) { $env:ESP_IDF_TOOLS }
-         else { Join-Path $env:USERPROFILE '.espressif\tools' }
+# Same discovery as build.ps1 and qemu.ps1, shared rather than copied.
+. (Join-Path $PSScriptRoot 'env.ps1')
 
-if (-not $env:IDF_PYTHON_ENV_PATH) {
-    $envRoot = Join-Path $env:USERPROFILE '.espressif\python_env'
-    if (Test-Path $envRoot) {
-        $venv = Get-ChildItem $envRoot -Directory -Filter 'idf*_env' -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($venv) { $env:IDF_PYTHON_ENV_PATH = $venv.FullName }
-    }
+if (-not $script:S3ToolDirs['qemu']) {
+    throw "qemu-system-xtensa.exe not found under $env:ESP_IDF_TOOLS."
 }
-if (-not $env:IDF_PYTHON_ENV_PATH) { throw "IDF_PYTHON_ENV_PATH is not set and no venv was found." }
-$py = Join-Path $env:IDF_PYTHON_ENV_PATH 'Scripts\python.exe'
+$py   = $script:S3Python
+$qemu = Join-Path $script:S3ToolDirs['qemu'] 'qemu-system-xtensa.exe'
 
-$qemuRoot = Get-ChildItem $tools -Directory -Filter 'qemu-xtensa' -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending | Select-Object -First 1
-if (-not $qemuRoot) { throw "qemu-xtensa not found under $tools" }
-$qemu = Get-ChildItem $qemuRoot.FullName -Recurse -Filter 'qemu-system-xtensa.exe' -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-if (-not $qemu) { throw "qemu-system-xtensa.exe not found under $($qemuRoot.FullName)" }
-$qemu = $qemu.FullName
 $flash = Join-Path $bd 'qemu_flash.bin'
 
 $bin = Join-Path $bd 's3_rtt_test.bin'

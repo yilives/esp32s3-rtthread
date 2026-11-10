@@ -89,9 +89,6 @@ $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
 
-$tools = if ($env:ESP_IDF_TOOLS) { $env:ESP_IDF_TOOLS }
-         else { Join-Path $env:USERPROFILE '.espressif\tools' }
-
 if (-not $Project) {
     foreach ($candidate in @("$repo\project\s3-rtt-test", "$repo\s3-rtt-test")) {
         if (Test-Path (Join-Path $candidate 'CMakeLists.txt')) { $Project = $candidate; break }
@@ -101,71 +98,30 @@ if (-not $Project) { throw "No ESP32-S3 project found. Pass -Project <path>." }
 $Project = (Resolve-Path $Project).Path
 
 # ---------------------------------------------------------------------- env --
-# Same recipe as build.ps1: idf.py qemu shells out to both esptool and
-# qemu-system-xtensa, so the full tool PATH and the IDF env must be present.
-if (-not $env:IDF_PATH) {
-    foreach ($candidate in @("$repo\..\esp-idf-rtt", "$repo\..\esp-idf")) {
-        if (Test-Path (Join-Path $candidate 'tools\idf.py')) {
-            $env:IDF_PATH = (Resolve-Path $candidate).Path
-            break
-        }
-    }
-}
-if (-not $env:IDF_PATH) { throw "IDF_PATH is not set and no ESP-IDF checkout was found next to this repo." }
-
-if (-not $env:IDF_PYTHON_ENV_PATH) {
-    $envRoot = Join-Path $env:USERPROFILE '.espressif\python_env'
-    if (Test-Path $envRoot) {
-        $venv = Get-ChildItem $envRoot -Directory -Filter 'idf*_env' -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($venv) { $env:IDF_PYTHON_ENV_PATH = $venv.FullName }
-    }
-}
-if (-not $env:IDF_PYTHON_ENV_PATH) { throw "IDF_PYTHON_ENV_PATH is not set and no venv was found." }
-$env:RTT_IDF_PATH = $env:IDF_PATH
-# Must match build.ps1. idf.py qemu depends on "all", and a different
-# CCACHE_ENABLE value makes CMake reconfigure from scratch and rebuild the
-# whole IDF (minutes) before QEMU even starts.
+# Same discovery as build.ps1, shared rather than copied: idf.py qemu shells out
+# to esptool and qemu-system-xtensa, so it needs the whole tool PATH plus the
+# IDF environment, and the copy that used to live here had drifted - it pinned
+# tool version directories (a number of them) and it did not set
+# ESP_IDF_VERSION, which a fresh checkout needs.
+#
+# IDF_CCACHE_ENABLE has to agree with build.ps1: idf.py qemu depends on "all",
+# and a different value makes CMake reconfigure from scratch and rebuild the
+# whole IDF before QEMU even starts.
 $env:IDF_CCACHE_ENABLE = '1'
-if (-not $env:LOCALAPPDATA) { $env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local' }
-if (-not $env:ESP_ROM_ELF_DIR) {
-    $romElf = Join-Path $tools 'esp-rom-elfs'
-    if (Test-Path $romElf) {
-        $latest = Get-ChildItem $romElf -Directory | Sort-Object Name -Descending | Select-Object -First 1
-        if ($latest) { $env:ESP_ROM_ELF_DIR = $latest.FullName + '\' }
-    }
-}
 Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
 
-# idf.py warns (on stderr) when Python's stdio is not UTF-8. With a redirected
-# console that is always the case, so force UTF-8 mode; the unbuffered switch
-# matters for -TimeoutSec, where QEMU is killed and a buffered capture would be
-# lost.
-$env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:PYTHONUNBUFFERED = '1'
-try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-cmd /c chcp 65001 | Out-Null
+. (Join-Path $PSScriptRoot 'env.ps1')
 
-$qemuDir = "$tools\qemu-xtensa\esp_develop_9.2.2_20260417\qemu\bin"
-$pathParts = @(
-    "$tools\xtensa-esp-elf\esp-15.2.0_20251204\xtensa-esp-elf\bin",
-    "$tools\xtensa-esp-elf-gdb\17.1_20260402\xtensa-esp-elf-gdb\bin",
-    "$tools\cmake\4.0.3\bin",
-    "$tools\ninja\1.12.1",
-    "$tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64",
-    $qemuDir,
-    "$env:IDF_PATH\components\espcoredump",
-    "$env:IDF_PATH\components\partition_table",
-    "$env:IDF_PATH\components\app_update",
-    "$env:IDF_PYTHON_ENV_PATH\Scripts",
-    "$env:IDF_PATH\tools"
-)
-$env:PATH = ($pathParts -join ';') + ';' + $env:PATH
-
-$python = Join-Path $env:IDF_PYTHON_ENV_PATH 'Scripts\python.exe'
-$idfPy = Join-Path $env:IDF_PATH 'tools\idf.py'
+if (-not $script:S3ToolDirs['qemu']) {
+    throw "qemu-system-xtensa.exe not found under $env:ESP_IDF_TOOLS. Run install.ps1 for target esp32s3 with QEMU, or set ESP_IDF_TOOLS."
+}
+$qemuDir = $script:S3ToolDirs['qemu']
 $qemuExe = Join-Path $qemuDir 'qemu-system-xtensa.exe'
+
+$env:PYTHONIOENCODING = 'utf-8'
+
+$python = $script:S3Python
+$idfPy = $script:S3IdfPy
 $buildDir = Join-Path $Project $BuildDir
 $flashBin = Join-Path $buildDir 'qemu_flash.bin'
 $efuseBin = Join-Path $buildDir 'qemu_efuse.bin'

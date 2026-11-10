@@ -272,6 +272,12 @@ msh >
 
 ## 6. QEMU（可选）
 
+> `-NoPsram` 曾经**完全没生效**：注释说建到 `build-qemu/`，实际建到 `build/`，
+> 两个变体互相覆盖。原因是 `-B build-qemu` 从没传给 idf.py——`-B` 是 idf.py 的
+> *全局*选项，必须放在子命令前面，而那段代码的位置错了。现在已验证：
+> `build/` 是硬件镜像（有 PSRAM、QIO），`build-qemu/` 是模拟器镜像（无 PSRAM、DIO）。
+
+
 没有硬件时可以用 QEMU 跑回归。注意 QEMU 不模拟 PSRAM，需要另一套 sdkconfig：
 
 ```powershell
