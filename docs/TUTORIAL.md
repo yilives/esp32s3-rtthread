@@ -226,6 +226,11 @@ msh >s3wifiscan
 
 ### 5.2 连接
 
+> **顺序很重要。** Wi-Fi 必须在 BLE 之前启动。如果 BLE 已经跑了，
+> `s3wifi` 会 `assoc` 成功后 6 ms 被踢（`deauth reason=1`）。
+> 必须在 BLE 之后连的话，先单独执行一次 `s3wifi`（只起接口），再带凭据执行。
+> 详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 1 条。
+
 ```
 msh >s3wifi 你的SSID 你的密码
 ```
@@ -352,7 +357,21 @@ s3ble: LED off via GATT write
 s3ble: disconnected, reason=531 - advertising again
 ```
 
-### 6.2 状态查询
+### 6.2 只停广播（保留控制器）
+
+```
+msh >s3ble adv off
+s3ble adv: PASS, advertising stopped (controller still up)
+
+msh >s3ble adv
+s3ble adv: PASS, advertising again
+```
+
+用来区分"BLE 在占用射频"和"BLE 控制器开着"这两种不同状态。
+实测：停掉广播并不能让 BLE→Wi-Fi 的顺序变得可用（0/1），
+所以问题不在射频。
+
+### 6.3 状态查询
 
 ```
 msh >s3ble info

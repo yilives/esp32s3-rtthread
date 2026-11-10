@@ -43,6 +43,8 @@
 #include "esp_wifi_default.h"
 #include "esp_netif_ip_addr.h"
 #include "nvs_flash.h"
+#include "esp_coexist.h"
+#include "esp_bt.h"
 
 #define S3_WIFI_WAIT_MS    5000
 #define S3_WIFI_CONNECT_MS 15000
@@ -412,6 +414,36 @@ static int cmd_wifi(int argc, char **argv)
     if (s3_step("esp_wifi_set_mode", esp_wifi_set_mode(WIFI_MODE_STA)) != 0)
     {
         return -1;
+    }
+
+    /*
+     * Ask the coex arbiter to favour Wi-Fi during association.
+     *
+     * This does NOT fix the BLE-then-Wi-Fi ordering problem - that was measured
+     * and this call changed nothing (still 0/4). It is kept because giving the
+     * station the larger share of the antenna while it associates is the right
+     * default for a Wi-Fi-first application, and because it is the one coex knob
+     * that is safe to set unconditionally.
+     *
+     * The ordering problem itself is documented in docs/KNOWN-ISSUES.md. Short
+     * version: association completes and the station is deauthenticated 6 ms
+     * later, which is the 4-way handshake, not radio arbitration - stopping the
+     * BLE advertisement does not help either, so it is not airtime.
+     *
+     * Failure here is not fatal: on a build without BLE this is a no-op.
+     */
+    {
+        esp_err_t coex = esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+
+        if (coex == ESP_OK)
+        {
+            rt_kprintf("  %-26s ok (prefer Wi-Fi)\n", "esp_coex_preference_set");
+        }
+        else
+        {
+            rt_kprintf("  %-26s 0x%x (%s), continuing\n",
+                       "esp_coex_preference_set", coex, esp_err_to_name(coex));
+        }
     }
 
     rt_memset(&conf, 0, sizeof(conf));

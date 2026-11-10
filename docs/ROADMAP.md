@@ -6,16 +6,23 @@
 
 ## 短期（1-3 天每项）
 
-### 1. 修 Wi-Fi/BLE 启动顺序
+### 1. 修 Wi-Fi 在 BLE 之后连接失败（**进行中，未解决**）
 
-**问题**：BLE 先起再连 Wi-Fi 是 0/4 失败（`deauth reason=1`）。
+**问题**：BLE 先起再连 Wi-Fi 是 0/4，`assoc` 成功后 6 ms 被踢，
+`deauth reason=1`。详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 1 条。
 
-**做法**：让 `nimble_port_init()` 之前检查 coex 状态，或者在 `s3wifi.c` 里
-检测到 BLE 已启动时先 `s3ble stop`。
+**这一轮已经排除的**（全部实测否定）：射频竞争、coex 仲裁偏好、时间不足、
+BT controller 抢占 CPU、需要先扫描。唯一可靠的是"分两次调用"，
+但自动化那一版触发了看门狗复位，已回退。
 
-**验证**：两种顺序各跑 5 次，都要 5/5。
+**下一步**：
 
-**风险**：低。改动局限在 `s3ble.c` / `s3wifi.c`。
+1. 抓 `WIFI_EVENT_STA_DISCONNECTED` 的完整结构体（`reason` 之外的字段）
+2. 对比 BLE 启用前后 `esp_phy` 的 NVS 校准数据（`phy` 分区）
+3. 开 `CONFIG_ESP_WIFI_DEBUG_PRINT`，看 4-way 第一个 EAPOL 帧有没有发出去
+
+**风险**：中。可能落在 `esp_phy` 或预编译的 `libnet80211.a` 里，那样就只能
+在应用侧绕（两段式），改不动根因。
 
 ---
 

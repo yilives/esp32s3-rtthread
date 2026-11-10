@@ -441,6 +441,41 @@ static int cmd_ble(int argc, char **argv)
             return -1;
         }
 
+        /*
+         * `s3ble adv off` - stop advertising but leave the controller running.
+         *
+         * Needed to tell "BLE is on the air" apart from "the BLE controller
+         * exists". Those are different states and, on this port, only the first
+         * one breaks Wi-Fi association: connecting while BLE advertises fails
+         * 0/4 (`deauth reason:1` after `run -> init`), and the open question is
+         * whether it is the radio traffic or merely the controller being enabled.
+         *
+         * Stopping the advertisement is the cheapest way to separate the two:
+         * the controller, the host task and the coex registration all stay up.
+         */
+        if (argc >= 3 && rt_strcmp(argv[2], "off") == 0)
+        {
+            int rc;
+
+            if (!s_ble_adv_started)
+            {
+                rt_kprintf("s3ble adv: not advertising\n");
+                return 0;
+            }
+
+            rc = ble_gap_adv_stop();
+            if (rc != 0)
+            {
+                rt_kprintf("s3ble adv off: FAIL, rc=%d\n", rc);
+                return -1;
+            }
+
+            s_ble_adv_started = 0;
+            rt_kprintf("s3ble adv: PASS, advertising stopped "
+                       "(controller still up)\n");
+            return 0;
+        }
+
         if (s_ble_adv_started)
         {
             rt_kprintf("s3ble adv: already advertising\n");

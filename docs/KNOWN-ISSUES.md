@@ -4,47 +4,72 @@
 
 ---
 
-## 1. Wi-Fi 必须在 BLE 之前启动
+## 1. Wi-Fi 在 BLE 之后连接会失败
 
 ### 现象
 
 | 顺序 | 结果 |
 | --- | --- |
-| Wi-Fi → BLE | ✅ 4/4 成功 |
-| BLE → Wi-Fi | ❌ 0/4 成功 |
+| Wi-Fi → BLE | 4/4 成功 |
+| BLE → Wi-Fi | 0/4 成功 |
 
-失败时的日志：
+失败时 `assoc` 会成功，然后在 **6 ms 内**被主动断开：
 
 ```
-W (69535) wifi:m f deauth reason:1
-W (69612) wifi:m f deauth reason:1
-s3wifi: FAIL after 240 ms: connected=0, retries=3, last reason=1
+I (51683) wifi:state: assoc -> run (0x10)
+I (51689) wifi:state: run -> init (0x100)
+I (51692) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy
+W (51692) wifi:m f deauth reason:1
+s3wifi: FAIL after 280 ms: connected=0, retries=3, last reason=1
 ```
 
-`reason=1` 是 `WIFI_REASON_UNSPECIFIED`。
+关联成功说明 SSID、密码、信道、射频链路全部正常。失败发生在之后的
+**4-way 握手**阶段，`reason=1` 是 `WIFI_REASON_UNSPECIFIED`。
 
-### 已做的隔离验证
+### 已经排除的解释
+
+这一轮把能想到的假设都测了，全部否定：
+
+| 假设 | 实验 | 结果 |
+| --- | --- | --- |
+| 射频被 BLE 广播占用 | 先 `s3ble adv off` 停广播再连 | **0/1 仍失败** |
+| coex 仲裁偏向 BLE | `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` | **仍失败** |
+| 需要时间稳定 | BLE 起来后等 6 s 再连 | **0/3 失败** |
+| BLE controller 任务抢占 | BT controller 绑 CPU1 | **BLE assert 崩溃**（`intc.c:222`），此路不通 |
+| 需要先扫描一次 | `s3wifiscan` 后再连 | 1/2，**不稳定** |
+| 需要分两次调用 | `s3wifi`（起接口）→ `s3wifi <ssid> <pass>` | **2/2 成功** |
+
+最后一行是目前唯一可靠的绕法，但把它搬进单次 `s3wifi` 的自动化尝试
+反而触发了看门狗复位（`_xt_handle_exc`），所以没有落地。
+
+### 现在怎么办
+
+**先连 Wi-Fi，再起 BLE。** 这是唯一验证过稳定的顺序（4/4）。
+
+一定要在 BLE 之后连，用两段式：
+
+```
+msh >s3ble
+msh >s3wifi                       # 只起接口，不连
+msh >s3wifi 你的SSID 你的密码      # 再连
+```
+
+### 与 ULP 无关
 
 | 配置 | BLE → Wi-Fi |
 | --- | --- |
 | ULP 启用 | 0/4 |
 | ULP 关闭 | 0/4 |
 
-**与 ULP 无关**，是 BLE/Wi-Fi 共存问题。
-
-### 可能的原因
-
-`esp_coex` 的初始化顺序假设。BLE controller 起来时会注册 coex 回调，
-如果这时 Wi-Fi 还没初始化，coex 的仲裁表可能没配好。
-
-### 现在怎么办
-
-**按 Wi-Fi → BLE 的顺序操作**。这是当前唯一可靠的方式。
-
 ### 修它需要什么
 
-在 `s3ble.c` 里让 NimBLE 启动等待 coex 就绪，或者在 `s3wifi.c` 里
-检测到 BLE 已启动时先停掉再起。两者的正确性都需要实测验证。
+失败点在 4-way 握手，而关联本身正常。下一步应该抓：
+1. `esp_wifi` 的 `WIFI_EVENT_STA_DISCONNECTED` 里的完整 `wifi_event_sta_disconnected_t`
+2. BLE 启用前后，`esp_phy` 的校准数据是否有差异（NVS 里的 `phy` 分区读写）
+3. 用 `CONFIG_ESP_WIFI_DEBUG_PRINT` 打开 802.11 层日志，看 4-way 的第一个
+   EAPOL 帧有没有发出去
+
+**这一项没有修完。**
 
 ---
 
