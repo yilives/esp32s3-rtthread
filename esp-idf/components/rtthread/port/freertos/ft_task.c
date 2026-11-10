@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Tasks on RT-Thread.
  *
  * The mapping is mostly mechanical, with three traps:

@@ -1,6 +1,6 @@
-﻿# Normalise line endings. The sources are written with LF; checking out with
+# Normalise line endings. The sources are written with LF; checking out with
 # CRLF on Windows is fine for the C files, but the patches must survive
-# byte-for-byte or git apply rejects them.
+# byte-for-byte or `git apply` rejects them.
 * text=auto
 
 *.patch  text eol=lf

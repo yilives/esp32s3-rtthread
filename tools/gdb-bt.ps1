@@ -1,4 +1,4 @@
-﻿# Attach GDB to a running QEMU image, stop it, and dump where it was.
+# Attach GDB to a running QEMU image, stop it, and dump where it was.
 #
 # Why this exists: several GDB commands deadlock on this target, and the
 # failures look like "GDB hangs" rather than like errors. Measured:

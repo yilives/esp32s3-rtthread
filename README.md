@@ -31,7 +31,7 @@ esp32s3-rtthread/
 │   └── patches/
 │       └── 0001-idf-core-smp-hooks.patch   16 个 IDF 文件的双核挂钩
 ├── project/s3-rtt-test/        示例工程：自检 + Wi-Fi + BLE + FS + WDT + ULP
-├── tools/                      构建、QEMU 脚本
+├── tools/                      env / 构建 / QEMU / GDB / 应用补丁
 └── docs/                       移植说明、教程、排障
 ```
 
@@ -110,6 +110,52 @@ s3smp: CPUS_NR=2, this core=1
 ```
 
 ---
+
+### 6. 没有硬件时：QEMU
+
+```powershell
+.\tools\build.ps1 -Project .\project\s3-rtt-test -NoPsram
+.\tools\qemu.ps1   -Project .\project\s3-rtt-test -BuildDir build-qemu -TimeoutSec 90
+```
+
+**期望**：
+
+```
+RESULT: PASS - all 6 expectation(s) matched
+```
+
+`-NoPsram` 建到 `build-qemu/`（无 PSRAM、DIO flash），`build/` 留给硬件镜像。
+两个变体的配置不同，别混用。
+
+> **坑**：构建失败时 `qemu.ps1` 会静默跑上一次的镜像。每次确认
+> `build-qemu/s3_rtt_test.bin` 的时间戳是新的。
+
+### 7. 调试
+
+QEMU 停在复位点等 GDB：
+
+```powershell
+.\tools\gdb-bt.ps1 -StartQemu          # 起 QEMU + attach + 打印双核 backtrace
+```
+
+或手动：
+
+```powershell
+.\tools\qemu-gdb.ps1                   # 冻结在复位点
+# 另一个窗口
+xtensa-esp32s3-elf-gdb .\project\s3-rtt-test\build-qemu\s3_rtt_test.elf
+(gdb) target remote localhost:1234
+```
+
+**三条 GDB 命令在这个目标上会挂**，报错方式不像报错：
+
+| 命令 | 结果 |
+| --- | --- |
+| `p rt_thread_self()->parent.name` | **挂死**——inferior function call 需要往目标注入代码，跑着的 QEMU 做不到 |
+| `p rt_tick` | `No symbol`——SMP 下 tick 在 `struct rt_cpu` 里，每核一份 |
+| `info threads` / `bt` / `p <全局变量>` | ✅ 正常 |
+
+详见 [docs/BUILD.md](docs/BUILD.md)。
 
 ## 支持情况
 
