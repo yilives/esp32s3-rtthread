@@ -46,9 +46,39 @@
 #include "esp_coexist.h"
 #include "esp_bt.h"
 
+/*
+ * Provided by s3ble.c. Weak so a build with CONFIG_BT_ENABLED off still links:
+ * without Bluetooth there is nothing to unload and the checks below are false.
+ */
+rt_bool_t s3ble_is_up(void) __attribute__((weak));
+rt_err_t s3ble_shutdown_quiet(void) __attribute__((weak));
+
+static rt_bool_t s3_wifi_ble_is_up(void)
+{
+    return (s3ble_is_up != RT_NULL) ? s3ble_is_up() : RT_FALSE;
+}
+
+static rt_err_t s3_wifi_ble_shutdown(void)
+{
+    return (s3ble_shutdown_quiet != RT_NULL) ? s3ble_shutdown_quiet() : RT_EOK;
+}
+
 #define S3_WIFI_WAIT_MS    5000
 #define S3_WIFI_CONNECT_MS 15000
-#define S3_WIFI_MAX_RETRY  3
+/*
+ * Disconnect budget before the stack stops reconnecting.
+ *
+ * Raised from 3 after measuring the BLE-then-Wi-Fi case with 802.11 debug on:
+ * the second attempt actually completed the 4-way handshake and brought up a
+ * block-ack session (`<ba-add>`), then dropped 414 ms later. With a budget of 3
+ * the stack stopped reconnecting while the link was still making progress, and
+ * the command had already reported failure at 280 ms.
+ *
+ * A wrong password still fails fast - it fails with reason 15 or 205 on every
+ * attempt and never produces a `<ba-add>` - so the larger budget costs nothing
+ * in the case it was originally sized for.
+ */
+#define S3_WIFI_MAX_RETRY  10
 
 #if CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM
 
@@ -446,6 +476,40 @@ static int cmd_wifi(int argc, char **argv)
         }
     }
 
+    /*
+     * If Bluetooth is up, take it down for the duration of the connect.
+     *
+     * This is the only sequence measured to work. Three facts, each verified:
+     *
+     *   - BLE enabled -> Wi-Fi connect fails 0/4, `assoc` then `deauth reason:1`
+     *     within 6 ms (the 4-way handshake, not airtime - stopping the
+     *     advertisement alone does not help).
+     *   - Disabling only the BT controller (`s3ble off`) still fails, so it is
+     *     not the radio transmitting either.
+     *   - `s3ble deinit` (full stack teardown) -> connect succeeds 3/3, and BLE
+     *     can be brought back up afterwards 3/3 without disturbing the link.
+     *
+     * So the conflict is state NimBLE leaves behind while it is loaded, and the
+     * workaround is to unload it around the connect. `s3ble` has to be run again
+     * afterwards - which the operator is told about.
+     *
+     * Only done when BLE is actually up, so a Wi-Fi-only boot is untouched.
+     */
+    if (s3_wifi_ble_is_up())
+    {
+        rt_kprintf("  %-26s ", "BT up: unloading first");
+
+        if (s3_wifi_ble_shutdown() == RT_EOK)
+        {
+            rt_kprintf("ok (run `s3ble` again afterwards)\n");
+            rt_thread_mdelay(200);
+        }
+        else
+        {
+            rt_kprintf("FAILED, connect will probably fail\n");
+        }
+    }
+
     rt_memset(&conf, 0, sizeof(conf));
 
     if (connect_mode)
@@ -552,13 +616,20 @@ static int cmd_wifi(int argc, char **argv)
         rt_thread_mdelay(20);
         waited += 20;
 
-        /* Stop early once the retry budget is spent: retrying a wrong password
-         * only makes the failure slower to report. */
-        if (s_wifi_retries >= S3_WIFI_MAX_RETRY &&
-            s_wifi_connected == 0 && s_wifi_got_ip == 0)
-        {
-            break;
-        }
+        /* No early exit on the retry budget.
+         *
+         * There used to be one, to make a wrong password fail quickly instead of
+         * waiting out the full timeout. It was removed because the counter cannot
+         * tell "failing" from "recovering": measured with 802.11 debug on, an
+         * attempt that had already completed the 4-way handshake and brought up a
+         * block-ack session still incremented the counter when it dropped, and
+         * three of those inside one second made the command report failure while
+         * the link was actively coming up.
+         *
+         * The wait is bounded by S3_WIFI_CONNECT_MS either way, and a genuinely
+         * wrong password is reported by the reason code, which is more useful than
+         * being told quickly.
+         */
     }
 
     if (s_wifi_got_ip == 0)

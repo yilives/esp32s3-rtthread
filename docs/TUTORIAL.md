@@ -226,10 +226,10 @@ msh >s3wifiscan
 
 ### 5.2 连接
 
-> **顺序很重要。** Wi-Fi 必须在 BLE 之前启动。如果 BLE 已经跑了，
-> `s3wifi` 会 `assoc` 成功后 6 ms 被踢（`deauth reason=1`）。
-> 必须在 BLE 之后连的话，先单独执行一次 `s3wifi`（只起接口），再带凭据执行。
-> 详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 1 条。
+> **如果 BLE 已经在跑**，`s3wifi` 会先自动把它拆掉再连（打印
+> `BT up: unloading first ok`）。连上之后可以用 `s3ble` 重新打开，
+> 不影响已建立的链路。这是一个工作区，根因见
+> [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 1 条。
 
 ```
 msh >s3wifi 你的SSID 你的密码

@@ -4,72 +4,68 @@
 
 ---
 
-## 1. Wi-Fi 在 BLE 之后连接会失败
+## 1. Wi-Fi 在 BLE 之后连接：已用工作区规避（根因未定位）
 
 ### 现象
 
 | 顺序 | 结果 |
 | --- | --- |
 | Wi-Fi → BLE | 4/4 成功 |
-| BLE → Wi-Fi | 0/4 成功 |
+| BLE → Wi-Fi（原样） | 0/4 失败 |
+| BLE → Wi-Fi（现在，自动处理） | **5/5 成功** |
 
 失败时 `assoc` 会成功，然后在 **6 ms 内**被主动断开：
 
 ```
-I (51683) wifi:state: assoc -> run (0x10)
-I (51689) wifi:state: run -> init (0x100)
-I (51692) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy
-W (51692) wifi:m f deauth reason:1
-s3wifi: FAIL after 280 ms: connected=0, retries=3, last reason=1
+I wifi:state: assoc -> run (0x10)
+I wifi:state: run -> init (0x100)
+I wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy
+W wifi:m f deauth reason:1
 ```
 
-关联成功说明 SSID、密码、信道、射频链路全部正常。失败发生在之后的
-**4-way 握手**阶段，`reason=1` 是 `WIFI_REASON_UNSPECIFIED`。
+关联成功说明 SSID、密码、信道、射频链路全部正常。失败在之后的
+**4-way 握手**。
 
-### 已经排除的解释
+### 这一轮新增的关键实验
 
-这一轮把能想到的假设都测了，全部否定：
+上一轮排除了射频竞争、coex 偏好、时间不足、CPU 抢占。这一轮把范围缩到了
+"NimBLE 加载时留下的状态"：
 
-| 假设 | 实验 | 结果 |
+| 实验 | 结果 | 说明 |
 | --- | --- | --- |
-| 射频被 BLE 广播占用 | 先 `s3ble adv off` 停广播再连 | **0/1 仍失败** |
-| coex 仲裁偏向 BLE | `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` | **仍失败** |
-| 需要时间稳定 | BLE 起来后等 6 s 再连 | **0/3 失败** |
-| BLE controller 任务抢占 | BT controller 绑 CPU1 | **BLE assert 崩溃**（`intc.c:222`），此路不通 |
-| 需要先扫描一次 | `s3wifiscan` 后再连 | 1/2，**不稳定** |
-| 需要分两次调用 | `s3wifi`（起接口）→ `s3wifi <ssid> <pass>` | **2/2 成功** |
+| `s3ble off`（只 disable controller，host 仍加载）→ 连 WiFi | **FAIL** | 不是 controller 在发射 |
+| `s3ble deinit`（整个栈拆掉）→ 连 WiFi | **PASS 3/3** | 拆掉就好了 |
+| `s3ble deinit` → 连 WiFi → `s3ble` 重开 | **PASS 3/3** | 重开不破坏链路 |
 
-最后一行是目前唯一可靠的绕法，但把它搬进单次 `s3wifi` 的自动化尝试
-反而触发了看门狗复位（`_xt_handle_exc`），所以没有落地。
+所以：**不是射频在竞争，也不是 BT controller 存在本身，而是 NimBLE host /
+HCI 层加载时留下的某种状态。** 拆掉整个栈就恢复，重开也不影响已建立的
+Wi-Fi 链路。
 
-### 现在怎么办
+### 现在的行为
 
-**先连 Wi-Fi，再起 BLE。** 这是唯一验证过稳定的顺序（4/4）。
-
-一定要在 BLE 之后连，用两段式：
+`s3wifi` 在连接前会检查 BLE 是否在跑，在跑就先 `s3ble_shutdown_quiet()`
+拆掉栈，连上之后用户可以再 `s3ble` 重开（不影响已连的 Wi-Fi）：
 
 ```
 msh >s3ble
-msh >s3wifi                       # 只起接口，不连
-msh >s3wifi 你的SSID 你的密码      # 再连
+msh >s3wifi 你的SSID 你的密码
+  BT up: unloading first     ok (run `s3ble` again afterwards)
+s3wifi: PASS, connected ...
+s3ble                      # 重开，不影响链路
 ```
 
-### 与 ULP 无关
+实测 5/5 通过，`Guru 0`。
 
-| 配置 | BLE → Wi-Fi |
-| --- | --- |
-| ULP 启用 | 0/4 |
-| ULP 关闭 | 0/4 |
+代价：BLE 会被断开一次。对"先起 BLE 调试、再连 Wi-Fi"的工作流可接受，
+对"BLE 长期在线 + Wi-Fi 长期在线"不够——那个场景仍然只能用
+Wi-Fi 先起的顺序。
 
-### 修它需要什么
+### 根因还没找到
 
-失败点在 4-way 握手，而关联本身正常。下一步应该抓：
-1. `esp_wifi` 的 `WIFI_EVENT_STA_DISCONNECTED` 里的完整 `wifi_event_sta_disconnected_t`
-2. BLE 启用前后，`esp_phy` 的校准数据是否有差异（NVS 里的 `phy` 分区读写）
-3. 用 `CONFIG_ESP_WIFI_DEBUG_PRINT` 打开 802.11 层日志，看 4-way 的第一个
-   EAPOL 帧有没有发出去
-
-**这一项没有修完。**
+下一步应该看 NimBLE host 加载时改了什么全局状态：HCI 的 buffer 池、
+`esp_coex` 的仲裁表项、还是 `esp_phy` 的 modem 标志（`phy_get_modem_flag()`）。
+`esp_phy_enable()` 在 `s_is_phy_calibrated` 之后走的是 `phy_wakeup_init()`
+分支而不是重新校准，这条路径在 BT 先启用时被走过一次。
 
 ---
 

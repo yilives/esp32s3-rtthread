@@ -410,6 +410,43 @@ static void s3_ble_host_task(void *param)
 
 #endif /* CONFIG_BT_NIMBLE_ENABLED */
 
+/*
+ * Tear the BLE stack down from another module.
+ *
+ * Needed because s3wifi may be asked to connect while Bluetooth is running, and
+ * that combination does not work (see docs/KNOWN-ISSUES.md). The only sequence
+ * measured to work is: bring BLE down, connect Wi-Fi, bring BLE back. That has
+ * to be orchestrated somewhere, and s3wifi is where the user's intent arrives.
+ *
+ * Returns RT_EOK when the stack is down (or was never up), -RT_ERROR when
+ * nimble_port_deinit() refused. Never prints: whether that is worth a line of
+ * console output is the caller's decision.
+ */
+rt_err_t s3ble_shutdown_quiet(void)
+{
+    if (!s_ble_up)
+    {
+        return RT_EOK;
+    }
+
+    (void)nimble_port_stop();
+
+    if (nimble_port_deinit() != ESP_OK)
+    {
+        return -RT_ERROR;
+    }
+
+    s_ble_up = RT_FALSE;
+    s_ble_synced = 0;
+    s_ble_adv_started = 0;
+    return RT_EOK;
+}
+
+rt_bool_t s3ble_is_up(void)
+{
+    return s_ble_up;
+}
+
 static int cmd_ble(int argc, char **argv)
 {
     int waited;
@@ -430,6 +467,65 @@ static int cmd_ble(int argc, char **argv)
                    (int)s_ble_up, (int)s_ble_synced, (int)s_ble_adv_started,
                    (int)s_ble_conns, (int)s_ble_last_disc_reason,
                    (int)s_ble_adv_err);
+        return 0;
+    }
+
+    /*
+     * `s3ble off` - disable the controller, keep the host and the stack loaded.
+     *
+     * Narrower than `deinit`: this stops the radio without tearing down NimBLE.
+     * If Wi-Fi works after this but not before, the conflict is the controller
+     * transmitting; if it still fails, it is the controller merely existing.
+     */
+    if (argc >= 2 && rt_strcmp(argv[1], "off") == 0)
+    {
+        if (!s_ble_up)
+        {
+            rt_kprintf("s3ble off: stack is not up\n");
+            return 0;
+        }
+
+        if (esp_bt_controller_disable() != ESP_OK)
+        {
+            rt_kprintf("s3ble off: esp_bt_controller_disable FAILED\n");
+            return -1;
+        }
+
+        rt_kprintf("s3ble off: PASS, controller disabled (host still loaded)\n");
+        return 0;
+    }
+
+    /*
+     * `s3ble deinit` - tear the whole stack down.
+     *
+     * This exists to answer one question that `s3ble adv off` cannot: is the
+     * Wi-Fi connection failure caused by something the BT controller is *doing*,
+     * or by state the controller left behind when it was enabled? Stopping the
+     * advertisement left Wi-Fi failing (0/1), which rules out airtime but not the
+     * controller's presence.
+     *
+     * If Wi-Fi connects after this, the conflict is live and resumable; if it
+     * still fails, the damage is already done and the only fix is ordering.
+     */
+    if (argc >= 2 && rt_strcmp(argv[1], "deinit") == 0)
+    {
+        int rc = nimble_port_stop();
+
+        if (rc != 0)
+        {
+            rt_kprintf("s3ble deinit: nimble_port_stop rc=%d\n", rc);
+        }
+
+        if (nimble_port_deinit() != ESP_OK)
+        {
+            rt_kprintf("s3ble deinit: nimble_port_deinit FAILED\n");
+            return -1;
+        }
+
+        s_ble_up = RT_FALSE;
+        s_ble_synced = 0;
+        s_ble_adv_started = 0;
+        rt_kprintf("s3ble deinit: PASS, stack down (BLE MAC no longer on air)\n");
         return 0;
     }
 

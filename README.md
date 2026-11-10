@@ -242,7 +242,7 @@ ULP 没有 TCB、没有优先级、不能调内核 API。它能做的是**发中
 
 | 限制 | 原因 | 影响 |
 | --- | --- | --- |
-| **Wi-Fi 必须在 BLE 之前启动** | BLE 后连 Wi-Fi 会在 4-way 握手失败（`assoc` 成功 6 ms 后被踢），实测 0/4；已排除射频竞争、coex 偏好、时间不足、CPU 抢占 | 顺序反过来 4/4；必须反序时用两段式（先 `s3wifi` 再带凭据） |
+| **BLE 在跑时连 Wi-Fi 会先拆掉 BLE** | NimBLE 加载时留下的状态破坏 4-way 握手（`assoc` 成功 6 ms 后被踢）。已排除射频竞争、coex 偏好、CPU 抢占；`s3ble off` 仍失败而 `s3ble deinit` 成功 | `s3wifi` 会自动先拆栈，连上后可 `s3ble` 重开（不影响链路）。实测 5/5 |
 | 文件系统只在开机挂载 | 格式化与无线栈的 flash 访问无法共存 | 运行中重新格式化可能挂死 |
 | ULP ISR 不释放信号量 | 上述 IRAM 契约 | 最多 1 tick 延迟 |
 | 没有电源管理 | `CONFIG_PM_ENABLE` 关闭 | 功耗为 datasheet 最大值 |
