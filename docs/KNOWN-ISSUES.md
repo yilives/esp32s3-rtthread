@@ -374,6 +374,80 @@ RT-Thread 生态里的网络组件（`webclient`、`mqtt`、`netutils`）用不�
 
 ---
 
+## 11. I2C 把超时和仲裁丢失误判成 ACK（已修）
+
+### 现象
+
+裸板上 `i2cscan` 报若干 `flaky` 地址，每次数量和地址都不同：
+
+```
+i2cscan: 0 device(s) on i2c0, 7 flaky, 0 timeout(s)
+i2cscan: 0 device(s) on i2c0, 9 flaky, 0 timeout(s)
+i2cscan: 0 device(s) on i2c0, 13 flaky, 0 timeout(s)
+```
+
+`flaky` 的定义是"两次探测中 ACK 了一次"，而板上没有任何 I2C 设备。
+
+### 根因
+
+`rt_s3_i2c_xfer_msg()` 的等待循环在三个错误位中的**任意一个**置位时 `break`：
+
+```c
+if (hw->int_raw.nack_int_raw || hw->int_raw.time_out_int_raw ||
+    hw->int_raw.arbitration_lost_int_raw)
+{
+    break;
+}
+```
+
+但循环之后判断成功与否时，只读了 `nack_int_raw`：
+
+```c
+nack = (hw->int_raw.nack_int_raw != 0);   /* 只看了一个 */
+```
+
+于是由**超时或仲裁丢失**引起的 break，`nack` 为 0，函数返回 `RT_EOK`，
+调用方把它当成 ACK。
+
+新增的 `i2cprobe` 命令证实了这一点——同一个地址连续探测：
+
+```
+i2cprobe: 0x50 x8 on i2c0
+  [ 0] rc=-8 NACK
+  [ 1] rc=1 ACK        <- 同一个地址，同一份代码
+  [ 2] rc=-8 NACK
+  [ 4] rc=1 ACK
+  ...
+```
+
+真设备每次都会 ACK；随机 ACK 只能是错误标志被忽略。
+
+### 修法
+
+三个错误位都算失败，且在 `i2c_ll_master_fsm_rst()` 清掉它们**之前**读取
+（那个函数会重新初始化寄存器块，见函数开头的注释）：
+
+```c
+nack = (hw->int_raw.nack_int_raw != 0) ||
+       (hw->int_raw.time_out_int_raw != 0) ||
+       (hw->int_raw.arbitration_lost_int_raw != 0);
+```
+
+### 验证
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| `i2cprobe 0x50 8` | 8 次里 2 次 ACK | **8/8 NACK** |
+| `i2cprobe 0x08 8` | 8/8 NACK | 8/8 NACK |
+| `i2cscan` 三次 | 7 / 9 / 13 flaky | **0 / 0 / 0** |
+
+### 顺带
+
+文档里写的 `s3rt i2c` / `s3rt spi` / `s3rt adc` 从来不存在，实际命令是
+`i2cscan` / `spiloop` / `s3adc`。已更正 README 和 TUTORIAL。
+
+---
+
 ## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -389,3 +463,4 @@ RT-Thread 生态里的网络组件（`webclient`、`mqtt`、`netutils`）用不�
 | 9 | 无 POSIX | 中 | 开 `RT_USING_POSIX`，解决与 esp_libc 的冲突 |
 | 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
 | 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |
+| 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |

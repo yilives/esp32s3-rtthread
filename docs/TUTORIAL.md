@@ -104,12 +104,15 @@ LED 会从暗到亮再到暗。这条验证 LEDC。
 ### 2.4 I2C / SPI / ADC
 
 ```
-msh >s3rt i2c      # 扫 I2C 总线
-msh >s3rt spi      # SPI 回环（需要短接 MOSI-MISO）
-msh >s3rt adc      # 读 SAR ADC
+msh >i2cscan                      # 扫描 I2C 总线（i2c0 = GPIO8/9）
+msh >i2cprobe 0x50 8              # 只探一个地址 8 次，排查"flaky"
+msh >spiloop                      # SPI 回环，需短接 MOSI-MISO
+msh >s3adc 1 3                    # 读 ADC1 通道 3（GPIO4）
 ```
 
-没有外设时这些会报"没找到设备"，那是正常的。
+**裸板上 `i2cscan` 应该报 `0 device(s) ... 0 flaky`。** 如果 flaky 不为 0 且每次不同，
+那不是信号问题——是驱动的错误位判定有 bug（已在 `i2c.c` 修掉，见
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md)）。
 
 ---
 

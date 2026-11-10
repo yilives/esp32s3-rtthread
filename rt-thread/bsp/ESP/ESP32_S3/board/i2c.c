@@ -333,13 +333,50 @@ static rt_err_t rt_s3_i2c_xfer_msg(struct rt_s3_i2c *bus, struct rt_i2c_msg *msg
          * it unconditionally was measured to report three to eight addresses as
          * ACKing on an empty bus.
          */
+        /*
+         * Latch the NACK before touching anything else.
+         *
+         * i2c_ll_master_fsm_rst() below re-initialises the register block (the
+         * S3 has no real FSM reset - see the note at the top of this function),
+         * and that clears the raw interrupt bits. Reading nack_int_raw after it
+         * therefore returns 0, which the caller interprets as "ACK received".
+         *
+         * Measured: on a bare board with no I2C devices, 12 of the 112 addresses
+         * were reported as "flaky" - ACKing on one of two probes - with a
+         * different set of addresses each run, and more of them at 50 kHz than
+         * at 100 kHz. Noise produces a NACK, so the true answer is always
+         * "no device"; the varying set is the signature of a value being read
+         * after it has been wiped, not of marginal signal integrity.
+         */
+        /*
+         * Latch the failure BEFORE the reset below wipes it, and treat any of
+         * the three error bits as a failure - not only NACK.
+         *
+         * The loop above breaks out on NACK *or* a bus timeout *or* arbitration
+         * loss, but the original code then decided "did this succeed?" from
+         * nack_int_raw alone. A break caused by either of the other two left
+         * nack == 0, so the function returned RT_EOK and the caller reported an
+         * ACK for an address that had in fact failed.
+         *
+         * Measured on a bare board with nothing on the bus: `i2cprobe 0x50 8`
+         * answered ACK-NACK-ACK-NACK-NACK-NACK-NACK-NACK, and `i2cprobe 0x08 8`
+         * answered NACK eight times - the same address, the same code, a
+         * different pattern, and never twice the same count across runs
+         * (7, 9, 13 "flaky" from successive scans). That is not signal
+         * integrity; it is an error flag being ignored.
+         *
+         * i2c_ll_master_fsm_rst() re-initialises the register block and clears
+         * these raw bits, so the read has to happen first.
+         */
+        nack = (hw->int_raw.nack_int_raw != 0) ||
+               (hw->int_raw.time_out_int_raw != 0) ||
+               (hw->int_raw.arbitration_lost_int_raw != 0);
+
         if (!i2c_ll_master_is_cmd_done(hw, (int)idx - 1))
         {
             i2c_ll_master_fsm_rst(hw);
         }
     }
-
-    nack = (hw->int_raw.nack_int_raw != 0);
 
     hw->int_clr.val = 0xFFFFFFFFu;
 
@@ -474,6 +511,77 @@ static rt_err_t rt_s3_i2c_init_port(rt_uint32_t port, rt_base_t scl, rt_base_t s
 
     return rt_i2c_bus_device_register(&bus->parent, name);
 }
+
+/*
+ * Probe one address N times and report each result.
+ *
+ * `i2cscan` can only say "flaky", which is ambiguous between a marginal bus and
+ * a driver that leaves state behind. Repeating a single address separates them:
+ * a real device ACKs every time, a noisy bus gives a random pattern, and a
+ * state-leak bug gives a deterministic pattern tied to how many probes came
+ * before it - which is why the order matters here and not just the count.
+ */
+static int cmd_i2cprobe(int argc, char **argv)
+{
+    rt_uint32_t addr = 0x50;
+    int count = 8;
+    struct rt_i2c_bus_device *bus;
+    char name[8];
+    int i;
+
+    if (argc >= 2) { addr = (rt_uint32_t)strtoul(argv[1], RT_NULL, 0); }
+    if (argc >= 3) { count = atoi(argv[2]); }
+    if (addr > 0x7F) { addr = 0x7F; }
+    if (count < 1 || count > 64) { count = 8; }
+
+    rt_snprintf(name, sizeof(name), "i2c0");
+    bus = (struct rt_i2c_bus_device *)rt_device_find(name);
+    if (bus == RT_NULL)
+    {
+        rt_kprintf("i2cprobe: %s not registered\n", name);
+        return -1;
+    }
+
+    rt_kprintf("i2cprobe: 0x%02x x%d on %s\n", (unsigned)addr, count, name);
+
+    for (i = 0; i < count; i++)
+    {
+        struct rt_i2c_msg msg;
+        rt_uint8_t dummy = 0;
+        rt_ssize_t rc;
+
+        msg.addr  = (rt_uint16_t)addr;
+        msg.flags = RT_I2C_WR;
+        msg.buf   = &dummy;
+        msg.len   = 0;
+
+        rc = rt_i2c_transfer(bus, &msg, 1);
+        rt_kprintf("  [%2d] rc=%d %s\n", i, (int)rc,
+                   (rc == 1) ? "ACK" : (rc == -RT_ETIMEOUT ? "TIMEOUT" : "NACK"));
+    }
+
+    /*
+     * Then probe a known-empty neighbour. If THAT one starts ACKing after the
+     * loop above, the driver is leaking state rather than the bus being noisy.
+     */
+    {
+        struct rt_i2c_msg msg;
+        rt_uint8_t dummy = 0;
+        rt_ssize_t rc;
+
+        msg.addr  = (rt_uint16_t)((addr + 1) & 0x7F);
+        msg.flags = RT_I2C_WR;
+        msg.buf   = &dummy;
+        msg.len   = 0;
+        rc = rt_i2c_transfer(bus, &msg, 1);
+        rt_kprintf("  next 0x%02x rc=%d (expect NACK)\n",
+                   (unsigned)((addr + 1) & 0x7F), (int)rc);
+    }
+
+    return 0;
+}
+MSH_CMD_EXPORT_ALIAS(cmd_i2cprobe, i2cprobe,
+                     probe one I2C address N times (i2cprobe <addr> [count]));
 
 /* ------------------------------------------------------------------ msh -- */
 

@@ -177,9 +177,9 @@ xtensa-esp32s3-elf-gdb .\project\s3-rtt-test\build-qemu\s3_rtt_test.elf
 | --- | --- | --- |
 | UART0 | `rt_serial` | 控制台 |
 | GPIO / 引脚中断 | `rt_pin_ops` | `s3rt led` / `s3rt key` |
-| I2C | `rt_i2c_bus` | `s3rt i2c` |
-| SPI | `rt_spi_bus` | `s3rt spi` |
-| ADC（SAR） | `rt_adc_device` | `s3rt adc` |
+| I2C | `rt_i2c_bus` | `i2cscan` / `i2cprobe` |
+| SPI | `rt_spi_bus` | `spiloop`（需 MOSI-MISO 短接）|
+| ADC（SAR） | `rt_adc_device` | `s3adc <1\|2> <ch>` |
 | LEDC PWM | `rt_pwm_device` | `s3rt pwm` |
 | SYSTIMER | tick 源 | `s3rt tick` |
 | PSRAM 8 MB octal | `heap_caps_malloc` | `s3rt psram` |
