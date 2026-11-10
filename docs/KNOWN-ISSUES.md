@@ -448,50 +448,64 @@ nack = (hw->int_raw.nack_int_raw != 0) ||
 
 ---
 
-## 12. Wi-Fi 先起后 BLE 报 Malloc failed（已修）
+## 12. Wi-Fi 先起后 BLE 报 Malloc failed（未解决，记录一次失败尝试）
 
 ### 现象
 
 ```
 msh >s3wifi <ssid> <pass>     # 连上
 msh >s3ble
-E (120069) BLE_INIT: Malloc failed
-I (120070) NimBLE: ogf=0x08, ocf=0x0008, hci_err=0x207 : BLE_ERR_MEM_CAPACITY
-s3ble: adv_set_fields failed rc=519
+E BLE_INIT: Malloc failed
+I NimBLE: hci_err=0x207 : BLE_ERR_MEM_CAPACITY
 s3ble: FAIL, synced but not advertising (rc=519)
 ```
 
-### 根因
+`CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` —— NimBLE 的缓冲区从内部 DRAM 分配，
+而 Wi-Fi 已把它占去不少。
 
-`CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` —— NimBLE 的缓冲区从**内部 DRAM**
-分配。Wi-Fi 起来后内部 DRAM 已经所剩不多，BLE 控制器申请不到。
+### 试过但更糟的方案
 
-### 修法
-
-改成从 PSRAM 分配：
+改成 `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y`（从 PSRAM 分配）。表面上解决了：
 
 ```
-CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+s3ble: advertising as "s3-rtt"     <- 看起来好了
 ```
 
-### 验证
+但下一次上电就变成：
 
-| | INTERNAL（修复前） | EXTERNAL（修复后） |
-| --- | --- | --- |
-| Wi-Fi 后 `s3ble` | `Malloc failed` rc=519 | `advertising as "s3-rtt"` |
-| `s3ble info` | — | `up=1 synced=1 advertising=1` |
-| 同时 `s3net` | — | PASS, 512 bytes |
+```
+BLE assert intc.c 222, param 00000008
+Guru Meditation Error: Core 0 panic'ed (StoreProhibited)
+PC 0x40385b82  remove_free_block (tlsf_control_functions.h:374)
+  <- block_locate_free <- tlsf_malloc <- multi_heap_malloc_impl
+```
 
-### 为什么现在才发现
+TLSF 的空闲链表被破坏。原因没有查清——可能是 `heap_caps_calloc` 的
+`MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT` 组合在这个移植上落到了未初始化的池，
+也可能与 `CONFIG_SPIRAM_USE_CAPS_ALLOC`（而非 `USE_MALLOC`）的初始化顺序有关。
 
-之前几轮验证时，`sdkconfig` 是从更早的手工配置继承的，那个配置里就是 EXTERNAL。
-本轮我把 `sdkconfig` 删掉、从 `sdkconfig.defaults` 重建，才发现 defaults 里根本没有
-这一项——REBUILD 后的默认值落在 INTERNAL。这和 2b/ULP 是同一类错误：
-**手写的 defaults 漏项**。现在 defaults 从验证过的 sdkconfig 完整生成。
+**已回退。** 现在的行为是：Wi-Fi 先连、再 `s3ble` 会失败；
+按 `s3ble` → `s3wifi` 的顺序则正常，且 `s3wifi` 发现 BLE 在跑时会先拆栈
+（见第 1 条），所以实际可用的组合是：
+
+```
+msh >s3ble                    # 先起 BLE
+msh >s3wifi <ssid> <pass>     # 会自动拆掉 BLE 再连
+msh >s3ble                    # 重开，不影响链路
+```
+
+或者反过来：先 `s3wifi` 连上，**不再**起 BLE。
+
+### 下一步
+
+1. 查 `CONFIG_SPIRAM_USE_CAPS_ALLOC` 下 PSRAM 池的初始化时机，
+   以及 `nimble_mem_calloc` 早于它调用的可能性
+2. 试 `CONFIG_SPIRAM_USE_MALLOC`（PSRAM 并入主堆），代价是所有 malloc 都可能落 PSRAM
+3. 或者给 NimBLE 的 MSYS 池一个静态数组（`msys` 的 pool 模式），完全不动态分配
 
 ---
 
-## 汇总表
+## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
 | --- | --- | --- | --- |
@@ -507,4 +521,4 @@ CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 | 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
 | 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |
 | 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |
-| 12 | Wi-Fi 后 BLE 报 Malloc failed | 高 | 已修：NimBLE 缓冲区改从 PSRAM 分配 |
+| 12 | Wi-Fi 后 BLE 报 Malloc failed | 高 | **未解决**；改 PSRAM 分配会导致 TLSF 堆损坏，已回退 |

@@ -37,57 +37,6 @@ entries:
         atomic_riscv (noflash)
         thread:rt_thread_self (noflash)
 
-        # ------------------------------------------------------------------
-        # The FreeRTOS shim's ISR path, which is a DIFFERENT way into the kernel
-        # than the trap path above and was not covered by it.
-        #
-        # IDF's Wi-Fi driver registers its ISR with ESP_INTR_FLAG_IRAM - real
-        # FreeRTOS keeps the corresponding queue code in IRAM, so that is correct
-        # there. This shim forwards to RT-Thread, so the same call arrives at
-        # rt_sem_trytake / rt_sem_release / rt_thread_resume / rt_schedule, none
-        # of which were in IRAM. Measured while re-joining a network (which writes
-        # NVS and therefore disables the flash cache):
-        #
-        #   Guru Meditation Error: Core 0 panic'ed (Cache error)
-        #   MEPC = 0x4200d506  rt_sem_trytake   (flash)
-        #   RA   = 0x40809762  ft_ipc_send_isr  (IRAM)
-        #
-        # The shim side had been fixed (FT_IRAM was empty on RISC-V for a while,
-        # see ft_core.h); this closes the kernel side.
-        #
-        # `ipc` is taken as a whole object rather than symbol by symbol: the
-        # semaphore entry points are small wrappers over _rt_sem_release and
-        # friends whose names have changed across RT-Thread versions, and a
-        # missing one shows up only as a fault with the cache off. The object is
-        # a few KB and IRAM has room before __heap_start__.
-        ipc (noflash)
-        # object.c: rt_object_get_type, reached from the RT_ASSERT inside
-        # _rt_sem_take. Fourth cache error of this series:
-        #
-        #   MEPC = 0x42000dfa  rt_object_get_type  (flash)
-        #   RA   = 0x4081b79e  _rt_sem_take        (IRAM)
-        #
-        # ALSO REVERTED BY AN EXTERNAL EDIT BEFORE. If this line is absent, the
-        # symptom is a cache error at rt_object_get_type while taking a
-        # semaphore from an ISR.
-        object (noflash)
-        thread:rt_thread_resume (noflash)
-        thread:rt_thread_suspend (noflash)
-        scheduler_up:rt_schedule (noflash)
-        scheduler_up:rt_schedule_insert_thread (noflash)
-        scheduler_up:rt_schedule_remove_thread (noflash)
-        scheduler_up:rt_critical_level (noflash)
-        scheduler_up:rt_enter_critical (noflash)
-        scheduler_up:rt_exit_critical (noflash)
-        thread:rt_thread_resume (noflash)
-        thread:rt_thread_suspend (noflash)
-        scheduler_up:rt_schedule (noflash)
-        scheduler_up:rt_schedule_insert_thread (noflash)
-        scheduler_up:rt_schedule_remove_thread (noflash)
-        scheduler_up:rt_critical_level (noflash)
-        scheduler_up:rt_enter_critical (noflash)
-        scheduler_up:rt_exit_critical (noflash)
-
         if IDF_TARGET_ESP32C3 = y:
             interrupt:rt_hw_interrupt_is_disabled (noflash)
         else:
