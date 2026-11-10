@@ -448,6 +448,49 @@ nack = (hw->int_raw.nack_int_raw != 0) ||
 
 ---
 
+## 12. Wi-Fi 先起后 BLE 报 Malloc failed（已修）
+
+### 现象
+
+```
+msh >s3wifi <ssid> <pass>     # 连上
+msh >s3ble
+E (120069) BLE_INIT: Malloc failed
+I (120070) NimBLE: ogf=0x08, ocf=0x0008, hci_err=0x207 : BLE_ERR_MEM_CAPACITY
+s3ble: adv_set_fields failed rc=519
+s3ble: FAIL, synced but not advertising (rc=519)
+```
+
+### 根因
+
+`CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` —— NimBLE 的缓冲区从**内部 DRAM**
+分配。Wi-Fi 起来后内部 DRAM 已经所剩不多，BLE 控制器申请不到。
+
+### 修法
+
+改成从 PSRAM 分配：
+
+```
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+```
+
+### 验证
+
+| | INTERNAL（修复前） | EXTERNAL（修复后） |
+| --- | --- | --- |
+| Wi-Fi 后 `s3ble` | `Malloc failed` rc=519 | `advertising as "s3-rtt"` |
+| `s3ble info` | — | `up=1 synced=1 advertising=1` |
+| 同时 `s3net` | — | PASS, 512 bytes |
+
+### 为什么现在才发现
+
+之前几轮验证时，`sdkconfig` 是从更早的手工配置继承的，那个配置里就是 EXTERNAL。
+本轮我把 `sdkconfig` 删掉、从 `sdkconfig.defaults` 重建，才发现 defaults 里根本没有
+这一项——REBUILD 后的默认值落在 INTERNAL。这和 2b/ULP 是同一类错误：
+**手写的 defaults 漏项**。现在 defaults 从验证过的 sdkconfig 完整生成。
+
+---
+
 ## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -464,3 +507,4 @@ nack = (hw->int_raw.nack_int_raw != 0) ||
 | 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
 | 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |
 | 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |
+| 12 | Wi-Fi 后 BLE 报 Malloc failed | 高 | 已修：NimBLE 缓冲区改从 PSRAM 分配 |

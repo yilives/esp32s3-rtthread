@@ -1,14 +1,20 @@
 # Default configuration for the s3-rtt-test image.
 #
-# This is the full, hardware-verified configuration - copied from a working
-# `sdkconfig` rather than curated by hand. That is deliberate: an earlier
-# version of this file listed about fifty settings and silently omitted the ULP
-# block, so a fresh checkout built an image whose `s3ulp` command was compiled
-# but whose ULP binary did not exist. A defaults file that is generated from a
-# configuration that actually ran is worth more than one that is hand-picked.
+# Generated from a configuration that was verified on hardware, not curated by
+# hand. An earlier hand-written version listed about fifty settings and silently
+# omitted the ULP block and the BLE memory mode, so a fresh checkout built an
+# image whose s3ulp command existed but whose ULP binary did not, and whose
+# s3ble failed with "Malloc failed" whenever Wi-Fi had already claimed the
+# internal DRAM.
 #
-# Entries that ESP-IDF derives from the target or from other options are
-# ignored at build time, so carrying them here is harmless.
+# CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL is the second of those: NimBLE's
+# buffers come from PSRAM instead of internal DRAM. Measured: with INTERNAL,
+# connecting Wi-Fi first leaves too little internal DRAM and the BLE controller
+# refuses with BLE_ERR_MEM_CAPACITY (rc=519); with EXTERNAL it advertises
+# normally and Wi-Fi keeps working.
+#
+# Entries that ESP-IDF derives from the target or from other options are ignored
+# at build time, so carrying them here is harmless.
 
 CONFIG_SOC_ADC_SUPPORTED=y
 CONFIG_SOC_UART_SUPPORTED=y
@@ -506,8 +512,8 @@ CONFIG_BT_SMP_CRYPTO_STACK_TINYCRYPT=y
 # CONFIG_BLE_LOG_ENABLED is not set
 # CONFIG_BT_BLE_LOG_SPI_OUT_ENABLED is not set
 # CONFIG_BT_LE_USED_MEM_STATISTICS_ENABLED is not set
-CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
-# CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL is not set
+# CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL is not set
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 # CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_DEFAULT is not set
 CONFIG_BT_NIMBLE_PINNED_TO_CORE=0
 CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
@@ -593,7 +599,7 @@ CONFIG_BT_NIMBLE_DIS_SERVICE=y
 CONFIG_BT_NIMBLE_GAP_SERVICE=y
 CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="nimble"
 CONFIG_BT_NIMBLE_GAP_DEVICE_NAME_MAX_LEN=31
-CONFIG_BT_NIMBLE_SVC_GAP_APPEARANCE=0
+CONFIG_BT_NIMBLE_SVC_GAP_APPEARANCE=0x0
 CONFIG_BT_NIMBLE_SVC_GAP_NAME_WRITE_PERM=0
 CONFIG_BT_NIMBLE_SVC_GAP_NAME_WRITE_PERM_ENC=0
 CONFIG_BT_NIMBLE_SVC_GAP_NAME_WRITE_PERM_AUTHEN=0
@@ -1783,8 +1789,8 @@ CONFIG_STACK_CHECK_NONE=y
 # CONFIG_WARN_WRITE_STRINGS is not set
 # CONFIG_BLUEDROID_ENABLED is not set
 CONFIG_NIMBLE_ENABLED=y
-CONFIG_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
-# CONFIG_NIMBLE_MEM_ALLOC_MODE_EXTERNAL is not set
+# CONFIG_NIMBLE_MEM_ALLOC_MODE_INTERNAL is not set
+CONFIG_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 # CONFIG_NIMBLE_MEM_ALLOC_MODE_DEFAULT is not set
 CONFIG_NIMBLE_PINNED_TO_CORE=0
 CONFIG_NIMBLE_PINNED_TO_CORE_0=y
