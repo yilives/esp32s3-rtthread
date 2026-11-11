@@ -96,16 +96,20 @@ led   : blinked 5x on GPIO48 (active-low), left ON
 ```
 msh >s3rt key pulse
 key   : GPIO0 idle (high), 0 press(es) counted
-pulsed 5 falling edges -> 8 interrupt(s) (PASS - the edge reached the ISR)
-press BOOT and run `s3rt key` again, or run
-`s3rt key pulse` to self-trigger the edge
+pulsed 5 falling edges -> 8 new interrupt(s), 8 total (PASS - the edge reached the ISR)
+(8 for 5 edges - contact bounce, expected)
 ```
 
-**期望**：`pulsed 5 falling edges -> N interrupt(s)` 且 N ≥ 5。
+**期望**：`-> N new interrupt(s)` 且 N ≥ 5。
 
-> **注意是 8 不是 5。** GPIO 边沿检测在按键抖动时会产生额外中断，这是正常的。
-> 判据是"至少 5 个"，不是"正好 5 个"。这一行验证的是
-> `rt_pin_attach_irq → esp_intr_alloc → ISR` 这条路通不通，不是消抖。
+> **注意是 8 不是 5，而且第一行显示 0。**
+>
+> 只有**一个**计数器 `key_presses`。第一行的 `0 press(es)` 是在脉冲**之前**
+> 读的，`8 total` 是脉冲之后。之所以两行都打印，是因为先前只报 delta 时，
+> `0 press(es)` 紧跟 `8 interrupt(s)` 看起来像"脉冲没被算作按键"。
+>
+> 8 > 5 是触点抖动，属于预期。这个命令验证的是边沿能不能到达 ISR，
+> **没有消抖**——加了消抖反而会掩盖它该暴露的中断风暴。
 
 ### 2.3 PWM
 

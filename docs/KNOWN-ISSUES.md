@@ -780,6 +780,45 @@ s3fs
 
 ---
 
+## 17. `s3rt key pulse` 的输出看起来像"脉冲未被计数"（已修）
+
+### 现象
+
+```
+msh >s3rt key pulse
+key   : GPIO0 idle (high), 0 press(es) counted
+        pulsed 5 falling edges -> 8 interrupt(s) (PASS - the edge reached the ISR)
+```
+
+第一行说 0 次按键，第二行说 8 次中断。看起来像自触发脉冲没被算进按键计数。
+
+### 实际没问题
+
+只有**一个**计数器 `key_presses`，由 `key_isr` 递增。第一行在脉冲**之前**
+读取，第二行是脉冲前后的差值。同一变量，读的时刻不同。
+
+### 但输出确实会误导
+
+我上一轮也误判成"有两个计数器，一个走消抖一个不走"。既然连维护者都会看错，
+读者更会。
+
+改成同时报新总数：
+
+```
+key   : GPIO0 idle (high), 0 press(es) counted
+        pulsed 5 falling edges -> 8 new interrupt(s), 8 total (PASS - the edge reached the ISR)
+        (8 for 5 edges - contact bounce, expected)
+```
+
+多出来的那行只在 `fired > 5` 时打印，解释触点抖动。
+
+### 为什么不加消抖
+
+这个命令验证的是**边沿能不能到达 ISR**。加消抖会掩盖它该暴露的中断风暴。
+8 > 5 是 GPIO 外设在 5 ms 间隔里latch 到了抖动，属于预期。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -801,3 +840,4 @@ s3fs
 | 14 | `s3wifiscan` netif 顺序错误 | 高 | 已修：init 之后建 netif，且不重复创建 |
 | 15 | `s3fs erase` 后无法挂载 | 高 | 已修：erase 成功后复位 `s_fs_mounted_once`；format 也停 Wi-Fi |
 | 16 | 文档性能数字缺前提 | 中 | 已修：注明卷状态、样本量、确定性 vs 波动 |
+| 17 | `s3rt key pulse` 输出误导 | 低 | 已修：同时报新总数，并说明抖动 |

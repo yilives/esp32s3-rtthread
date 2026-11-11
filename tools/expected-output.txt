@@ -71,6 +71,10 @@ duty_start 1 -> LED should be dimmed; `s3rt led` gives full brightness
 [s3rt key]
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 
+[s3rt key pulse]
+key   : GPIO0 idle \(high\), \d+ press\(es\) counted
+pulsed 5 falling edges -> \d+ new interrupt\(s\), \d+ total \(PASS - the edge reached the ISR\)
+
 [s3smp]
 s3smp: CPUS_NR=\d+, this core=\d+
 cpu0: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
