@@ -37,6 +37,34 @@ entries:
         atomic_riscv (noflash)
         thread:rt_thread_self (noflash)
 
+        # ------------------------------------------------------------
+        # The FreeRTOS shim's ISR path: a DIFFERENT way into the kernel
+        # than the trap path above, and not covered by it.
+        #
+        # IDF's Wi-Fi driver registers its ISR with ESP_INTR_FLAG_IRAM
+        # because real FreeRTOS keeps the corresponding queue code in
+        # IRAM. This shim forwards to RT-Thread, so the same call arrives
+        # at rt_sem_trytake / rt_sem_release / rt_schedule / object
+        # helpers - none of which were in IRAM. Measured while re-joining
+        # a network (NVS write, flash cache off):
+        #
+        #   MEPC = 0x4200d506  rt_sem_trytake  (flash)
+        #   RA   = 0x40809762  ft_ipc_send_isr (IRAM)
+        #
+        # and after fixing that one, the same fault at
+        # rt_object_get_type, which the RT_ASSERT inside _rt_sem_take
+        # calls. Each round revealed one more object, so the whole of
+        # `ipc` and `object` are taken rather than chasing symbols.
+        #
+        # NOTE: an external change has removed these lines more than
+        # once. If a cache error appears at any rt_* symbol while an
+        # interrupt is active, check here first.
+        # ------------------------------------------------------------
+        ipc (noflash)
+        object (noflash)
+        thread:rt_thread_resume (noflash)
+        thread:rt_thread_suspend (noflash)
+
         if IDF_TARGET_ESP32C3 = y:
             interrupt:rt_hw_interrupt_is_disabled (noflash)
         else:

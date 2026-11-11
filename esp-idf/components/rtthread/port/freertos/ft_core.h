@@ -57,11 +57,11 @@ typedef rt_uint32_t     ft_tick_t;
  * The attribute expands to nothing on a non-Xtensa target, where the cache is
  * not shared with flash the same way.
  */
-#if defined(__XTENSA__)
-#  define FT_IRAM           __attribute__((section(".iram1")))
-#else
-#  define FT_IRAM
-#endif
+/* UNCONDITIONAL: ESP32-C5 is RISC-V and has the same flash cache as Xtensa.
+ * A flash-resident callee in an IRAM ISR is a cache access error on both.
+ * Measured: MEPC 0x4206f21e ft_ipc_resolve (flash) / RA 0x408095bc
+ * xQueueGenericSendFromISR (IRAM) during a Wi-Fi re-join (NVS write). */
+#define FT_IRAM             __attribute__((section(".iram1")))
 
 #define ftPASS              ((ft_base_t)1)
 #define ftFAIL              ((ft_base_t)0)

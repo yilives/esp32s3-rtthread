@@ -150,6 +150,11 @@ set(kernel_srcs
     "${RTTHREAD_ROOT}/src/irq.c"
     "${RTTHREAD_ROOT}/src/kservice.c"
     "${RTTHREAD_ROOT}/src/mem.c"
+    # memheap.c: the second allocator (`psram`), and the one the system heap
+    # itself uses once RT_USING_MEMHEAP_AS_HEAP is on. Upstream compiles it from
+    # SConscript only when RT_USING_MEMHEAP is set; this list is unconditional,
+    # so the guard inside the file does the work.
+    "${RTTHREAD_ROOT}/src/memheap.c"
     # mempool.c defines rt_mp_create()/rt_mp_alloc()/rt_mp_free(). It is a
     # separate translation unit from mem.c and is only compiled by upstream's
     # SConscript when RT_USING_MEMPOOL is on, which is the Kconfig default - so
