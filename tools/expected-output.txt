@@ -32,11 +32,13 @@
 #
 # Three rules, each of which has already produced a false failure:
 #
-#  1. The `s3fsbench small` bounds span two volume states on purpose. The write
-#     count is 152 on a freshly formatted volume and 190 on one that has been
-#     used, and both are correct - a long run cannot guarantee which one it is
-#     at that point. The bounds still catch a real regression: before the
-#     allocation-unit tuning this count was 1460.
+#  1. The `s3fsbench small` write and erase counts are exact, not a range.
+#     They are 152/136 with use_one_fat = true, regardless of the volume's
+#     history - measured across four states (just formatted, second run on the
+#     same volume, after the bulk write, and across a reboot with files left
+#     behind). 190/170 means use_one_fat was turned off, and 1460 means the
+#     allocation-unit tuning is missing. Exact values make both of those
+#     visible; a range around 152 would only catch the first.
 #
 #     Creating 32 small files is sensitive to how spread out the directory
 #     entries already are; the bulk write is too, but in time rather than in
@@ -206,11 +208,11 @@ s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 
 [s3fsbench small]
 s3fsbench: create 32 small files -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
-~ 1 in 145..200
-~ 2 in 130..180
+~ 1 == 152
+~ 2 == 136
 s3fsbench: overwrite one file 8x -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
-~ 1 in 40..80
-~ 2 in 35..70
+~ 1 in 40..60
+~ 2 in 35..55
 s3fsbench: create 32 x 64 B in (\d+) ms
 ~ 1 in 4000..12000
 s3fsbench: overwrite one file 8x in (\d+) ms

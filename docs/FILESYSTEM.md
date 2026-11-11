@@ -217,33 +217,59 @@ target_compile_definitions(${wl_lib} PRIVATE WL_DEFAULT_TEMP_BUFF_SIZE=4096)
 > 512 字节逻辑扇区意味着每个 4 KB 页要做读-改-写，成本是线性的 8 倍加上
 > 擦除，实测 71 倍）。**这个结论比具体数字重要**，数字只说明量级。
 
-### 两个基准各自要求一个新卷
+### 关于 152 和 190 这两个写次数
 
-`s3fsbench` 的两种模式都必须在**刚格式化**的卷上跑，而且**互不干扰**：
+`s3fsbench small` 的写次数有两个值：
 
-| 顺序 | bulk write 结果 |
+| `use_one_fat` | writes | erases | create 32 小文件 |
+| --- | --- | --- | --- |
+| `true`（当前） | **152** | **136** | 5506 ms |
+| `false` | **190** | **170** | 7249 ms |
+
+**这就是优化 3 的效果，A/B 实测**：改一行配置、重编、烧写、各自在空卷上测。
+
+```
+use_one_fat = true   -> 152 writes / 136 erases / 5506 ms
+use_one_fat = false  -> 190 writes / 170 erases / 7249 ms
+```
+
+差 20% 的写次数和 24% 的时间。
+
+> **一次更正（两次修订）。** 本文档曾经说 152 是"新格式化卷"的数字、190 是
+> "用过的卷"的数字。那是错的——实测在 `use_one_fat=true` 下，四种卷状态
+> （刚格式化 / 同卷再跑 / 跑过 bulk write / 跨重启有遗留文件）**全部是 152/136**。
+>
+> 190/170 的真正来源是**卷是怎么创建的**：
+>
+> | 创建方式 | writes | 原因 |
+> | --- | --- | --- |
+> | `s3fs erase` → `s3fs`（自动格式化）| **152** | 用 `s3_fs_mount()` 的 mkfs 参数 |
+> | `s3fs erase` → `s3fs format` → `s3fs` | **190** | `s3fs format` 当时用 IDF 默认参数（双 FAT）|
+>
+> 后者是 bug，已修（见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 21 条）。现在两条
+> 路径都给 152。
+>
+> 而 `use_one_fat = false` 确实会给 190/170——A/B 实测过：
+>
+> | 配置 | writes | erases | create 32 小文件 |
+> | --- | --- | --- | --- |
+> | `use_one_fat = true` | 152 | 136 | 5506 ms |
+> | `use_one_fat = false` | 190 | 170 | 7249 ms |
+>
+> **两个不同原因给出同一个数字**，这是第一次归因错的根源。
+
+### 那么 bulk write 的 958 vs 2312 ms 呢
+
+那个差异是**真的**，而且与写次数无关：
+
+| 顺序 | bulk write |
 | --- | --- |
 | 新卷 → 直接 `s3fsbench write` | 958 ms / 267 KB/s |
 | 新卷 → `s3fsbench small` → `s3fsbench write` | 2312 ms / 110 KB/s |
 
-**写次数两种情况都是 79/71** —— 多出来的时间不是多写了 flash，是分配器在
-碎片化的空闲链表里找块。同理，`small` 在新卷上是 152/136，被 bulk 的
-256 KB 文件弄脏之后是 190/170。
+写次数两种情况都是 79/71。多出来的时间是分配器在碎片化的空闲链表里找块。
 
-所以手工复现数字时要按顺序来：
-
-```
-msh >s3fs unmount
-msh >s3fs erase
-msh >s3fs                    # 自动格式化并挂载
-msh >s3fsbench small         # 立刻测，别先跑别的
-msh >s3fs unmount
-msh >s3fs erase
-msh >s3fs
-msh >s3fsbench write         # 同样用新卷
-```
-
-这也解释了为什么不同时间测的数字会对不上——不是性能漂移，是卷的历史不同。
+这个仍然是"两个基准会互相干扰"，但**影响的只有时间，不影响写次数**。
 
 ### 最终数据
 

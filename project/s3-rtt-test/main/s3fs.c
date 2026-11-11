@@ -148,51 +148,59 @@ static rt_bool_t   s_fs_mounted_once;
  * format, a torn FAT - and reformatting would destroy exactly the evidence and
  * the data that matter. That case fails loudly and points at `s3fs erase`.
  */
+/*
+ * One definition of the mkfs/mount parameters, used by both the mount and the
+ * explicit `s3fs format`.
+ *
+ * It has to be shared. `s3fs format` originally called
+ * esp_vfs_fat_spiflash_format_rw_wl(), which formats with IDF's defaults
+ * (two FAT copies) while the mount config asks for one - so the same command
+ * produced volumes with different write amplification depending on which path
+ * created them. Measured 152 writes / 5506 ms with one FAT and 190 writes /
+ * 7249 ms with two.
+ */
+static esp_vfs_fat_mount_config_t s3_fat_cfg = {
+    /*
+     * format_if_mount_failed is set per call, not here - see s3_fs_mount().
+     * The cost of getting it wrong in the permissive direction is silent data
+     * loss: a format interrupted by a watchdog reset left a volume that mounted
+     * but failed every fopen with EACCES, and `format_if_mount_failed = true`
+     * would have erased it on the next boot without a word.
+     */
+    .format_if_mount_failed = false,
+    .max_files = S3FS_MAX_FILES,
+    /*
+     * One cluster per wear-levelling sector (4 KB).
+     *
+     * 8 KB clusters were measured and rejected: no gain, because the cost is one
+     * sector program per file either way and the FAT is short enough at 256
+     * clusters that halving it does not save a write. Larger clusters would only
+     * add internal fragmentation.
+     */
+    .allocation_unit_size = CONFIG_WL_SECTOR_SIZE,
+    .disk_status_check_enable = false,
+    /*
+     * One FAT copy instead of two.
+     *
+     * Two copies exist so a damaged primary can be replaced by the mirror. That
+     * protection is worth something on a raw block device and close to nothing
+     * here: every write already goes through wear_levelling, which itself keeps a
+     * spare block and a position-update record, so "one FAT copy torn, the other
+     * intact" is far rarer than on bare flash. What the second copy definitely
+     * costs is a full extra 4 KB program per metadata update - measured 190
+     * writes instead of 152 for the 32-small-file benchmark, 7249 ms instead of
+     * 5506.
+     *
+     * The trade is real, not free: with one copy, a torn FAT write leaves the
+     * volume unmountable instead of repairable. `s3fs erase` recovers that by
+     * wiping the partition, and this partition holds application data, not
+     * firmware - a reflash is not required.
+     */
+    .use_one_fat = true,
+};
+
 static int s3_fs_mount(void)
 {
-    esp_vfs_fat_mount_config_t cfg = {
-        /*
-         * Format only the first mount of a boot; see the note above on why this is
-         * stateful rather than a probe of the flash contents.
-         *
-         * The cost of getting this wrong in the permissive direction is silent
-         * data loss, and it is not hypothetical: a format interrupted by a
-         * watchdog reset left a volume that mounted but failed every fopen with
-         * EACCES, and the default `format_if_mount_failed = true` would have
-         * erased it on the next boot without a word.
-         */
-        .format_if_mount_failed = !s_fs_mounted_once,
-        .max_files = S3FS_MAX_FILES,
-        /*
-         * One cluster per wear-levelling sector (4 KB).
-         *
-         * 8 KB clusters were measured and rejected: 5316 ms versus 5297 ms for the
-         * 32-small-file burst, i.e. no gain, because the cost is one sector
-         * program per file either way and the FAT is short enough at 256 clusters
-         * that halving it does not save a write. Larger clusters would only add
-         * internal fragmentation.
-         */
-        .allocation_unit_size = CONFIG_WL_SECTOR_SIZE,
-        .disk_status_check_enable = false,
-        /*
-         * One FAT copy instead of two.
-         *
-         * Two copies exist so a damaged primary can be replaced by the mirror.
-         * That protection is worth something on a raw block device and close to
-         * nothing here: every write already goes through wear_levelling, which
-         * itself keeps a spare block and a position-update record, so the failure
-         * mode "one FAT copy torn, the other intact" is far rarer than it is on
-         * bare flash. What the second copy definitely costs is a full extra 4 KB
-         * program per metadata update - measured at 37.6 sector writes per
-         * fclose() versus 18.1 with a single copy.
-         *
-         * The trade is real, not free: with one copy, a torn FAT write leaves the
-         * volume unmountable instead of repairable. `s3fs erase` recovers that by
-         * wiping the partition, and this partition holds application data, not
-         * firmware - a reflash is not required.
-         */
-        .use_one_fat = true,
-    };
     esp_err_t err;
 
     if (s_fs_mounted)
@@ -201,9 +209,14 @@ static int s3_fs_mount(void)
         return RT_EOK;
     }
 
+    /* format_if_mount_failed is the one field that depends on boot state, so
+     * the shared config is copied rather than passed directly. */
+    esp_vfs_fat_mount_config_t mount_cfg = s3_fat_cfg;
+    mount_cfg.format_if_mount_failed = !s_fs_mounted_once;
+
     fs_wdt_pause();
     err = esp_vfs_fat_spiflash_mount_rw_wl(S3FS_MOUNT_POINT, S3FS_PARTITION,
-                                           &cfg, &s_fs_wl);
+                                           &mount_cfg, &s_fs_wl);
     fs_wdt_resume();
     if (err != ESP_OK)
     {
@@ -376,9 +389,50 @@ static int cmd_s3fs(int argc, char **argv)
             rt_kprintf("s3fs: Wi-Fi suspended for the format\n");
         }
 
+        /*
+         * Format with OUR mkfs parameters, not IDF's defaults.
+         *
+         * esp_vfs_fat_spiflash_format_rw_wl() passes NULL down to
+         * esp_vfs_fat_spiflash_format_cfg_rw_wl(), which substitutes
+         *
+         *   { .max_files = 1, .format_if_mount_failed = true }
+         *
+         * and formats with the default FAT layout - two FAT copies. Every other
+         * way this command creates a volume goes through s3_fs_mount()'s config,
+         * which sets use_one_fat. So `s3fs erase` followed by `s3fs` produced a
+         * one-FAT volume and `s3fs format` produced a two-FAT one, and nothing
+         * said so:
+         *
+         *   erase -> s3fs (auto-format) -> s3fsbench small : 152 writes
+         *   erase -> s3fs format -> s3fs -> s3fsbench small : 190 writes
+         *
+         * 20% more writes and 24% more time on every metadata update, for a
+         * volume that looks identical from `s3fs`. The _cfg_ variant exists for
+         * exactly this; passing our config makes the two paths agree.
+         */
+        /*
+         * format_if_mount_failed must be true for this call, or nothing happens.
+         *
+         * esp_vfs_fat_spiflash_format_cfg_rw_wl() does not format directly: it
+         * mounts first and only formats if that mount fails. Passing the shared
+         * config unchanged - where format_if_mount_failed is false, because the
+         * mount path sets that per boot - made it fail with
+         *
+         *   E vfs_fat_spiflash: f_mount failed with error: "No filesystem
+         *     detected" [13]
+         *   E vfs_fat_spiflash: ... Failed to mount
+         *
+         * and `s3fs format` reported ESP_FAIL. The other fields (allocation unit,
+         * use_one_fat) are what this command needs to share; this one is what it
+         * needs to override.
+         */
+        esp_vfs_fat_mount_config_t fmt_cfg = s3_fat_cfg;
+        fmt_cfg.format_if_mount_failed = true;
+
         fs_wdt_pause();
-        err = esp_vfs_fat_spiflash_format_rw_wl(S3FS_MOUNT_POINT,
-                                                S3FS_PARTITION);
+        err = esp_vfs_fat_spiflash_format_cfg_rw_wl(S3FS_MOUNT_POINT,
+                                                   S3FS_PARTITION,
+                                                   &fmt_cfg);
         fs_wdt_resume();
 
         if (s3_wifi_resume_after_flash != RT_NULL)

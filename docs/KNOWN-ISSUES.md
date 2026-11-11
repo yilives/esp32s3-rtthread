@@ -860,48 +860,56 @@ malloc(largest+1) refused, as it should be
 
 ---
 
-## 19. `s3fsbench` 的两种模式互相干扰（已加说明）
+## 19. 152 与 190 写次数：一个被我归因错的数字（已更正）
 
-### 现象
+### 曾经的说法
 
-同一个 `s3fsbench write`，同一块板子，同一次启动：
+`FILESYSTEM.md` 里写：`s3fsbench small` 在新卷上是 152/136，在"用过的卷"上是
+190/170，并建议复现时先格式化。
 
-```
-新卷 -> 直接 bulk write          : 958 ms / 267 KB/s
-新卷 -> small -> bulk write      : 2312 ms / 110 KB/s
-```
+**这是错的。**
 
-**2.4 倍**。而写次数两边都是 79 writes / 71 erases。
+### 实测
 
-### 不是写放大
+`use_one_fat = true`（当前配置）下，四种卷状态各测一次：
 
-写次数相同说明写的 flash 一样多。多出来的时间是**分配器在碎片化的空闲链表里
-找块**——`small` 建了 32 个小文件又删掉，留下分散的空闲簇，bulk write 要写
-256 KB 连续数据时找不到连续区域。
+| 卷的状态 | writes / erases |
+| --- | --- |
+| 刚 `s3fs erase` + 自动格式化 | 152 / 136 |
+| 同一个卷再跑一次 | 152 / 136 |
+| 跑过 `s3fsbench write`（256 KB 文件）后 | 152 / 136 |
+| 跨重启、卷里有上次留下的文件 | 152 / 136 |
 
-反过来也成立：`small` 在新卷上是 152/136，被 bulk 的 256 KB 文件弄脏后是
-190/170。
+四种全部相同。
 
-### 影响
+真正的原因是 `use_one_fat`，A/B 实测：
 
-- 文档里的 1064 ms / 240 KB/s 是"新卷 → 直接 bulk"的数字，**没错**
-- 但复现时必须先 `s3fs erase` 再 `s3fs`，否则会测出 2312 ms 然后以为性能回退了
-- `check-docs.ps1` 一次启动里跑完所有节，**不可能给两个基准各自一个新卷**，
-  所以那两个范围必须覆盖两种状态
+| 配置 | writes | erases | create 32 小文件 |
+| --- | --- | --- | --- |
+| `use_one_fat = true` | **152** | **136** | 5506 ms |
+| `use_one_fat = false` | **190** | **170** | 7249 ms |
 
-### 文档改动
+写次数由 FAT 副本数决定——双份 FAT 每次元数据更新要多写一份。与卷的历史无关。
 
-`FILESYSTEM.md` 加了一节"两个基准各自要求一个新卷"，给出正确的复现顺序。
-`expected-output.txt` 的注释里也写了这条，免得下次有人重排后看到假失败。
+### 错误归因是怎么产生的
 
-### 一个无法复现的数字
+早期 build 目录里缓存着 `use_one_fat=false` 时期的配置。测出 190/170 之后，
+恰好那次的卷是先跑过别的测试的，于是"卷用过"成了一个看起来合理的解释，
+而且它在**那一次**确实复现了（下次再测得也是 190，因为配置还是旧的）。
 
-同一份文档里"512 字节扇区让批量写慢 71 倍（82351 ms）"。那需要改
-`CONFIG_WL_SECTOR_SIZE` 并重新烧写，运行期切不了；而 512 字节扇区这个方案
-已经被否定，所以当前构建里**验证不了**这个数字。
+直到第 33 轮修 CMake 时删掉 `build/` 从零 configure，两个变量才分开：
+`use_one_fat` 是 `true`，而卷的历史怎么变都是 152。
 
-保留它是因为它解释了"为什么默认 4 KB 扇区"——SPI NOR 物理页是 4 KB。
-但加了标注说明数字来自另一套配置，避免读者以为能在当前构建上重现。
+### 教训
+
+**两个变量同时存在时，一次"复现"不算证据。** 我当时看到一个相关就停了，
+没有做 A/B——而 A/B 只需要改一行、重编一次。
+
+### 仍然成立的部分
+
+`bulk write` 的 958 vs 2312 ms 是真的，但**只影响时间，不影响写次数**：
+两种情况都是 79 writes / 71 erases。多出来的是分配器在碎片化的空闲链表里
+找 256 KB 连续空间的时间。
 
 ---
 
@@ -981,6 +989,74 @@ Remove-Item build -Recurse -Force
 
 ---
 
+## 21. `s3fs format` 创建的是双 FAT 卷（已修）
+
+### 现象
+
+同一个 `s3fsbench small`，同一次启动，取决于卷是怎么创建的：
+
+| 创建方式 | writes / erases | create 32 小文件 |
+| --- | --- | --- |
+| `s3fs erase` → `s3fs`（自动格式化）| **152 / 136** | 5506 ms |
+| `s3fs erase` → `s3fs format` → `s3fs` | **190 / 170** | 7249 ms |
+
+两条路都得到"已挂载的空卷"，`s3fs` 看不出区别。差 20% 写次数、24% 时间。
+
+### 根因
+
+`s3fs format` 调的是：
+
+```c
+esp_vfs_fat_spiflash_format_rw_wl(S3FS_MOUNT_POINT, S3FS_PARTITION);
+```
+
+它内部把 NULL 转给 `esp_vfs_fat_spiflash_format_cfg_rw_wl()`，后者替换成
+
+```c
+{ .max_files = 1, .format_if_mount_failed = true }
+```
+
+于是用 **FAT 默认布局（两份 FAT）** 格式化。而 `s3_fs_mount()` 的配置里写的是
+`use_one_fat = true`。**同一个命令，两条路径创出不同的卷。**
+
+### 修法
+
+1. 把 mkfs 参数提成一个共享的 `s3_fat_cfg`，mount 和 format 都用它
+2. `s3fs format` 改用 `esp_vfs_fat_spiflash_format_cfg_rw_wl()`，传该配置
+
+### 修的过程中撞到的第二个坑
+
+改完之后 `s3fs format` 直接失败：
+
+```
+E vfs_fat_spiflash: f_mount failed with error: "No filesystem detected" [13]
+E vfs_fat_spiflash: esp_vfs_fat_spiflash_format_cfg_rw_wl(277): Failed to mount
+s3fs: format failed 0xffffffff (ESP_FAIL)
+```
+
+因为 `_cfg_` 版本**不直接格式化**：它先 mount，只有 mount 失败才格式化。而共享
+配置里 `format_if_mount_failed = false`（mount 路径按启动状态设这个字段），
+于是它卡在 mount 失败上，什么都不做。
+
+所以 format 时要用一个副本，把这个字段强制成 `true`，其余字段（`use_one_fat`、
+`allocation_unit_size`）保持共享。
+
+### 验证
+
+```
+erase -> s3fs (auto-format)  -> small : 152/136
+erase -> s3fs format -> mount -> small : 152/136
+```
+
+两条路一致。`check-docs.ps1` 35/35 全绿。
+
+### 这个 bug 是怎么被发现的
+
+不是靠读代码。是第 32 轮加 `~` 范围断言后，`152` 被写成精确值，完整序列跑出
+`190` 才暴露的。**一个"两个数字都合理"的差异，只有在断言了具体值之后才会叫。**
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -1004,5 +1080,6 @@ Remove-Item build -Recurse -Force
 | 16 | 文档性能数字缺前提 | 中 | 已修：注明卷状态、样本量、确定性 vs 波动 |
 | 17 | `s3rt key pulse` 输出误导 | 低 | 已修：同时报新总数，并说明抖动 |
 | 18 | PSRAM 三个数字不一致 | 信息 | 不是 bug；已加 largest/largest+1 的实测验证 |
-| 19 | `s3fsbench` 两种模式互相干扰 | 信息 | 不是 bug；各自需要新卷，已写入文档 |
+| 19 | 152 vs 190 写次数归因错误 | 中 | 已更正：是 `use_one_fat`，不是卷的历史；A/B 实测 |
 | 20 | 从零 configure 失败 | **高** | 已修：sibling 路径 + RTTHREAD_ROOT 未写 cache |
+| 21 | `s3fs format` 创建双 FAT 卷 | **中** | 已修：共享 mkfs 配置，两条路径一致 |
