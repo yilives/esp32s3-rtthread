@@ -209,6 +209,42 @@ target_compile_definitions(${wl_lib} PRIVATE WL_DEFAULT_TEMP_BUFF_SIZE=4096)
 | 关闭 LFN（仅 8.3） | 5461 vs 5483 ms，几乎无收益，代价太大 |
 | max_files 5 → 8 | 无明显变化（保留） |
 
+> **这一表的数字来自当时的配置，改配置才能复现。** 尤其是 512 字节扇区那一行
+> —— 它需要把 `CONFIG_WL_SECTOR_SIZE` 改成 512 并重新烧写，不是运行期可切换的。
+> 而这套配置已经被否定了，所以当前构建里**无法**重新验证 82351 ms。
+>
+> 保留它的理由：它解释了为什么默认用 4 KB 扇区（SPI NOR 的物理页是 4 KB，
+> 512 字节逻辑扇区意味着每个 4 KB 页要做读-改-写，成本是线性的 8 倍加上
+> 擦除，实测 71 倍）。**这个结论比具体数字重要**，数字只说明量级。
+
+### 两个基准各自要求一个新卷
+
+`s3fsbench` 的两种模式都必须在**刚格式化**的卷上跑，而且**互不干扰**：
+
+| 顺序 | bulk write 结果 |
+| --- | --- |
+| 新卷 → 直接 `s3fsbench write` | 958 ms / 267 KB/s |
+| 新卷 → `s3fsbench small` → `s3fsbench write` | 2312 ms / 110 KB/s |
+
+**写次数两种情况都是 79/71** —— 多出来的时间不是多写了 flash，是分配器在
+碎片化的空闲链表里找块。同理，`small` 在新卷上是 152/136，被 bulk 的
+256 KB 文件弄脏之后是 190/170。
+
+所以手工复现数字时要按顺序来：
+
+```
+msh >s3fs unmount
+msh >s3fs erase
+msh >s3fs                    # 自动格式化并挂载
+msh >s3fsbench small         # 立刻测，别先跑别的
+msh >s3fs unmount
+msh >s3fs erase
+msh >s3fs
+msh >s3fsbench write         # 同样用新卷
+```
+
+这也解释了为什么不同时间测的数字会对不上——不是性能漂移，是卷的历史不同。
+
 ### 最终数据
 
 | 指标 | 优化前 | 优化后 | 改善 |
