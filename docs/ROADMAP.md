@@ -2,27 +2,43 @@
 
 按"投入产出比"排序，不是按重要性。
 
+**这份文档会过时。** 做完一项就把它从"计划"移到 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)
+的"已修"或 README 的"支持情况"，否则读者会按过时的前提做决定。第 1 条就曾经
+停留在"未解决"好几个版本，而它其实已经修了。
+
 ---
 
 ## 短期（1-3 天每项）
 
-### 1. 修 Wi-Fi 在 BLE 之后连接失败（**进行中，未解决**）
+### 1. 让 Wi-Fi 起来之后还能再起 BLE（**未解决，投入产出比低**）
 
-**问题**：BLE 先起再连 Wi-Fi 是 0/4，`assoc` 成功后 6 ms 被踢，
-`deauth reason=1`。详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 1 条。
+**已修的部分**：BLE → Wi-Fi 曾经是 0/4，现在是 6/6。根因不是射频，是
+`s3wifi` 里拆 BLE 的代码排在了 `esp_wifi_init()` **之后**——Wi-Fi 要一次性分配
+10 个 1600 字节的静态 RX buffer，BLE 还占着内部 DRAM 就失败了。移到前面即可。
+详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 12 条。
 
-**这一轮已经排除的**（全部实测否定）：射频竞争、coex 仲裁偏好、时间不足、
-BT controller 抢占 CPU、需要先扫描。唯一可靠的是"分两次调用"，
-但自动化那一版触发了看门狗复位，已回退。
+**剩下的**：Wi-Fi 已经占住内部 DRAM 之后，BLE controller 拿不到它需要的
+> 56 KB 连续内部 DRAM。实测：
 
-**下一步**：
+```
+                   内部 DRAM 空闲    最大连续块
+开机              :    93512           53248
+Wi-Fi 起来后      :    59364           31744
+s3ble 尝试之后    :     2568            2304
+```
 
-1. 抓 `WIFI_EVENT_STA_DISCONNECTED` 的完整结构体（`reason` 之外的字段）
-2. 对比 BLE 启用前后 `esp_phy` 的 NVS 校准数据（`phy` 分区）
-3. 开 `CONFIG_ESP_WIFI_DEBUG_PRINT`，看 4-way 第一个 EAPOL 帧有没有发出去
+失败形态有两种，取决于碎片形状：多数是 `BLE_INIT: Malloc failed`，
+少数是注册 `ETS_RWBT_NMI_SOURCE` 时断言（`intc.c:222`）。
 
-**风险**：中。可能落在 `esp_phy` 或预编译的 `libnet80211.a` 里，那样就只能
-在应用侧绕（两段式），改不动根因。
+**试过无效的**（全部已回退，详见第 12 条）：PSRAM 分配模式、Wi-Fi 静态/动态
+buffer 数量、`BT_CTRL_BLE_MAX_ACT` 6→2（只腾出 3.7 KB）、NimBLE 连接数/MTU。
+
+**下一步唯一有意义的**：`libbtdm_app.a` 是预编译的，只能靠实测推断那 56 KB
+花在哪。MAX_ACT 减到三分之一只省 3.7 KB，说明大头是固定结构而非
+per-activity 缓冲。压 activity 这条路走不通。
+
+**风险**：高，收益低。两个无线同时在线对这块板子的 512 KB 内部 DRAM 本来就
+紧张。**建议按已知限制接受**，用 BLE → Wi-Fi 的顺序。
 
 ---
 
@@ -162,6 +178,13 @@ SMP 下还要额外考虑两核的空闲协同——一核 idle 不代表另一�
 | 路线 B（纯 scons 构建） | 需要重造整个 IDF 运行时，见 README 的对比 |
 | Xtensa 的 `call0` ABI | S3 用窗口化 ABI（`call8`），`call0` 只在 ESP32 的老核上 |
 
+> **`bsp/ESP/ESP32_S3/SConscript` 是 RT-Thread BSP 的标准模板**，不是路线 B 的
+> 实现。它只做一件事：收集子目录的 `SConscript`。而 `board/` 目录里没有
+> `SConscript`，所以它什么也不收集，`scons` 构建这条路仍然是空的。
+>
+> 保留它是因为上游所有 BSP 都有这个文件，删掉反而不符合惯例。但看到它存在
+> 就以为"也许 scons 能编"是个合理的误判——所以在这里说清楚。
+
 ---
 
 ## 怎么参与
@@ -175,3 +198,4 @@ SMP 下还要额外考虑两核的空闲协同——一核 idle 不代表另一�
 
 现有的模式可以参考 `docs/FILESYSTEM.md` 的性能调优那一节：先测基线，
 再定位，再改，再测，最后把无效的尝试也记下来。
+

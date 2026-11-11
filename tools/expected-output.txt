@@ -107,6 +107,10 @@ i2cscan: probing i2c0 \(\d+ Hz\)
 i2cscan: idle levels SCL\(GPIO\d+\)=\d SDA\(GPIO\d+\)=\d
 i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
 
+[i2cprobe 0x50 8]
+i2cprobe: 0x50 x8 on i2c0
+\[ 0\] rc=-?\d+ (ACK|NACK)
+
 [spiloop]
 spiloop: spi0 \d+ bytes, \d+ cycles = ~\d+ us \(expected ~\d+ us at \d+ Hz\)
 spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+

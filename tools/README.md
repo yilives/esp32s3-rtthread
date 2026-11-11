@@ -20,6 +20,7 @@
 | `fetch-upstream.ps1` | 把本仓库的改动应用到上游树 |
 | `verify-tree.ps1` | **检查上游树是否只含本仓库的改动**（见下）|
 | `check-docs.ps1` | **在板上跑文档里的命令，比对实际输出**（见下）|
+| `verify-doc-commands.ps1` | **核对文档提到的命令是否真的导出**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -100,6 +101,35 @@ RESULT: PASS - all 31 section(s) matched
 Wi-Fi 之前——Wi-Fi 起来后 BLE 拿不到那 56 KB 连续内部 DRAM
 （第 12 条）。清单的注释里写了这件事，免得下次有人重排后看到两个
 "失败"却其实是同一个已知约束。
+
+## `verify-doc-commands.ps1`：文档里的命令名要存在
+
+不需要板子，几秒钟跑完。检查两件事：
+
+1. 文档里每个 `msh >xxx` 对应的命令，代码里真的有 `MSH_CMD_EXPORT`
+2. 代码导出的命令有没有在文档里完全没提（只报告，不算错误）
+
+```powershell
+.\tools\verify-doc-commands.ps1
+```
+
+**期望**：
+
+```
+  code exports 16 command(s)
+  docs invoke  18 command(s) via 'msh >'
+  Every command the docs tell a reader to type exists.
+```
+
+`free` / `list` 这类内核自带命令在白名单里，它们不来自本仓库的代码。
+
+### 为什么需要它
+
+`ROADMAP.md` 有一条"BLE 之后连 Wi-Fi 失败（进行中，未解决）"，在它已经被修好
+**好几个版本之后**还留在那里。散文不会编译失败，没有东西会拦住它。
+
+命令名是可以检查的那部分：如果文档让读者敲 `s3foo` 而没有这个命令，那是
+脚本能抓到的事实错误。
 
 ## 参数
 
