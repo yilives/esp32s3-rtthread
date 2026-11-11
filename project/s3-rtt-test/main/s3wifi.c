@@ -441,6 +441,36 @@ static int cmd_wifi(int argc, char **argv)
      *   esp_wifi_start             ok
      *   s3wifi: FAIL, no WIFI_EVENT_STA_START within 5000 ms */
     {
+        /*
+         * Unload Bluetooth FIRST, before esp_wifi_init().
+         *
+         * This used to sit after the init, and that ordering made the whole
+         * workaround useless in the one direction that needs it: `s3ble` then
+         * `s3wifi` failed inside esp_wifi_init with
+         *
+         *   W wifi:malloc buffer fail
+         *   E wifi:Expected to init 10 rx buffer, actual is 9
+         *   esp_wifi_init  FAILED 0x101 (ESP_ERR_NO_MEM)
+         *
+         * - the Wi-Fi driver could not allocate its buffers because BLE still
+         * held them. Unloading afterwards cannot help an allocation that has
+         * already failed.
+         */
+        if (s3_wifi_ble_is_up())
+        {
+            rt_kprintf("  %-26s ", "BT up: unloading first");
+
+            if (s3_wifi_ble_shutdown() == RT_EOK)
+            {
+                rt_kprintf("ok (run `s3ble` again afterwards)\n");
+                rt_thread_mdelay(200);
+            }
+            else
+            {
+                rt_kprintf("FAILED, connect will probably fail\n");
+            }
+        }
+
         esp_err_t err = esp_wifi_init(&cfg);
 
         if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_WIFI_INIT_STATE)
@@ -508,21 +538,6 @@ static int cmd_wifi(int argc, char **argv)
      *
      * Only done when BLE is actually up, so a Wi-Fi-only boot is untouched.
      */
-    if (s3_wifi_ble_is_up())
-    {
-        rt_kprintf("  %-26s ", "BT up: unloading first");
-
-        if (s3_wifi_ble_shutdown() == RT_EOK)
-        {
-            rt_kprintf("ok (run `s3ble` again afterwards)\n");
-            rt_thread_mdelay(200);
-        }
-        else
-        {
-            rt_kprintf("FAILED, connect will probably fail\n");
-        }
-    }
-
     rt_memset(&conf, 0, sizeof(conf));
 
     if (connect_mode)

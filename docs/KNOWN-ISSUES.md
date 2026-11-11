@@ -43,8 +43,15 @@ Wi-Fi 链路。
 
 ### 现在的行为
 
-`s3wifi` 在连接前会检查 BLE 是否在跑，在跑就先 `s3ble_shutdown_quiet()`
-拆掉栈，连上之后用户可以再 `s3ble` 重开（不影响已连的 Wi-Fi）：
+`s3wifi` 在 **`esp_wifi_init()` 之前**检查 BLE 是否在跑，在跑就先
+`s3ble_shutdown_quiet()` 拆掉栈，连上之后用户可以再 `s3ble` 重开
+（不影响已连的 Wi-Fi）。
+
+> 这个检查原本排在 `esp_wifi_init()` **之后**，导致 `s3ble` → `s3wifi`
+> 反而在 Wi-Fi 初始化时就 `ESP_ERR_NO_MEM` 失败。位置已修正，
+> 实测 5/5，见第 12 条。
+
+
 
 ```
 msh >s3ble
@@ -448,64 +455,75 @@ nack = (hw->int_raw.nack_int_raw != 0) ||
 
 ---
 
-## 12. Wi-Fi 先起后 BLE 报 Malloc failed（未解决，记录一次失败尝试）
+## 12. 两个无线只能按 BLE → Wi-Fi 的顺序起（Wi-Fi → BLE 仍失败）
 
-### 现象
-
-```
-msh >s3wifi <ssid> <pass>     # 连上
-msh >s3ble
-E BLE_INIT: Malloc failed
-I NimBLE: hci_err=0x207 : BLE_ERR_MEM_CAPACITY
-s3ble: FAIL, synced but not advertising (rc=519)
-```
-
-`CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y` —— NimBLE 的缓冲区从内部 DRAM 分配，
-而 Wi-Fi 已把它占去不少。
-
-### 试过但更糟的方案
-
-改成 `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y`（从 PSRAM 分配）。表面上解决了：
+### 可用顺序
 
 ```
-s3ble: advertising as "s3-rtt"     <- 看起来好了
+msh >s3ble                    # 1. 先起 BLE
+msh >s3wifi <ssid> <pass>     # 2. 连 Wi-Fi（会自动拆掉 BLE）
+msh >s3net example.com        # 3.
 ```
 
-但下一次上电就变成：
+**实测 5/5 通过**（`advertising as "s3-rtt"` → `unloading first` → `s3wifi: PASS`
+→ `s3net: PASS`，无 Guru、无 NO_MEM）。
+
+### 不可用顺序
 
 ```
-BLE assert intc.c 222, param 00000008
-Guru Meditation Error: Core 0 panic'ed (StoreProhibited)
-PC 0x40385b82  remove_free_block (tlsf_control_functions.h:374)
-  <- block_locate_free <- tlsf_malloc <- multi_heap_malloc_impl
+msh >s3wifi <ssid> <pass>
+msh >s3ble                    # 失败
 ```
 
-TLSF 的空闲链表被破坏。原因没有查清——可能是 `heap_caps_calloc` 的
-`MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT` 组合在这个移植上落到了未初始化的池，
-也可能与 `CONFIG_SPIRAM_USE_CAPS_ALLOC`（而非 `USE_MALLOC`）的初始化顺序有关。
-
-**已回退。** 现在的行为是：Wi-Fi 先连、再 `s3ble` 会失败；
-按 `s3ble` → `s3wifi` 的顺序则正常，且 `s3wifi` 发现 BLE 在跑时会先拆栈
-（见第 1 条），所以实际可用的组合是：
-
 ```
-msh >s3ble                    # 先起 BLE
-msh >s3wifi <ssid> <pass>     # 会自动拆掉 BLE 再连
-msh >s3ble                    # 重开，不影响链路
+BLE assert intc.c 222, param 00000008      # = ETS_RWBT_NMI_SOURCE
 ```
 
-或者反过来：先 `s3wifi` 连上，**不再**起 BLE。
+### 本轮修掉的那个 bug
 
-### 下一步
+`s3wifi` 里拆 BLE 的那段代码**位置错了**：它排在 `esp_wifi_init()` 之后。
 
-1. 查 `CONFIG_SPIRAM_USE_CAPS_ALLOC` 下 PSRAM 池的初始化时机，
-   以及 `nimble_mem_calloc` 早于它调用的可能性
-2. 试 `CONFIG_SPIRAM_USE_MALLOC`（PSRAM 并入主堆），代价是所有 malloc 都可能落 PSRAM
-3. 或者给 NimBLE 的 MSYS 池一个静态数组（`msys` 的 pool 模式），完全不动态分配
+```
+行 444: esp_wifi_init()        <- 内存不足，失败
+行 511: s3_wifi_ble_is_up()    <- 之后才拆，太晚
+```
+
+Wi-Fi 驱动要一次性分配 10 个 1600 字节的静态 RX buffer，BLE 还占着内部 DRAM：
+
+```
+W wifi:malloc buffer fail
+E wifi:Expected to init 10 rx buffer, actual is 9
+esp_wifi_init  FAILED 0x101 (ESP_ERR_NO_MEM)
+```
+
+拆 BLE 对已经失败的分配没有帮助。移到 `esp_wifi_init()` **之前**后，这条路
+从 0/5 变成 5/5。
+
+### Wi-Fi → BLE 为什么还不行（未解决）
+
+`param 00000008` 是 `ETS_RWBT_NMI_SOURCE` —— BLE controller 初始化时要注册
+RWBT 的 NMI 中断，而此时 Wi-Fi 已经占用了中断控制器里的资源。断言在预编译的
+`libbtdm_app.a` 里（`intc.c:222`），改不动。
+
+### 试过但无效的方案
+
+| 尝试 | 结果 |
+| --- | --- |
+| `BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL`（PSRAM） | 4/6，仍会 `intc.c:222`，且出现过 TLSF 堆损坏的 Guru |
+| WiFi 静态 RX 10→6、动态 32→16 | 5/6，重复测 4/8 —— 波动太大，不算修好 |
+| WiFi 静态 RX 6→4、动态 16→8 | 2/6，更差 |
+| `linker.lf` 把 `ipc`/`interrupt` 搬进 IRAM | 与这个问题无关（但见下） |
+
+**都已回退。** 现在的配置是默认值 + BLE 先起。
+
+### 一个仍然有效的独立改进
+
+`linker.lf` 里的 `ipc (noflash)` / `object (noflash)` / `interrupt (noflash)`
+把 ISR 路径搬进了 IRAM，与无线顺序问题无关，保留。
 
 ---
 
-## 汇总表## 汇总表
+## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
 | --- | --- | --- | --- |
@@ -521,4 +539,4 @@ msh >s3ble                    # 重开，不影响链路
 | 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
 | 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |
 | 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |
-| 12 | Wi-Fi 后 BLE 报 Malloc failed | 高 | **未解决**；改 PSRAM 分配会导致 TLSF 堆损坏，已回退 |
+| 12 | 两个无线只能 BLE→Wi-Fi | 中 | BLE→Wi-Fi 已 5/5；Wi-Fi→BLE 仍 `intc.c:222`，在预编译库里改不动 |
