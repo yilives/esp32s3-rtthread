@@ -465,11 +465,16 @@ msh >s3wifi <ssid> <pass>     # 2. 连 Wi-Fi（会自动拆掉 BLE）
 msh >s3net example.com        # 3.
 ```
 
-**实测 6/6**：BLE 广播成功 6/6，Wi-Fi 连接成功 6/6，两者都成功 6/6
+**实测 6/6，Guru 0**：BLE 广播成功 6/6，Wi-Fi 连接成功 6/6
 （`advertising as "s3-rtt"` → `unloading first` → `s3wifi: PASS`）。
 
-其中 1 次运行中出现过一次 `Guru` 复位；复位后同一次测试仍然完成并成功。
-那个 Guru 没能复现，也没有抓到栈——**记录在案，不算已解决**。
+> **一次更正。** 这个数字先前记作"6/6，但其中 1 次出现 Guru"。那是本地工作树
+> 的状态，不是这个仓库的状态：`components/lwip/lwip/src/api/tcpip.c`、
+> `components/lwip/port/freertos/sys_arch.c` 和
+> `components/esp_netif/lwip/esp_netif_lwip.c` 里各有一段未提交的调试代码
+> （RTC_NOINIT 计数器和诊断打印，引用 `c5tcp` 测试）。清掉之后同一测试 6/6、
+> Guru 0。这些文件**从未进入本仓库的 patch** —— patch 只含 17 个文件，
+> 不含 lwip 和 esp_netif。
 
 ### 不可用顺序
 
@@ -516,12 +521,14 @@ s3ble 尝试之后    :       2568            2304
 BLE controller 一次性要 **> 56 KB 的连续内部 DRAM**。Wi-Fi 占掉后只剩
 31 KB 的最大块，不够。
 
-所以失败会以两种形式出现，取决于当时碎片的形状：
+清理掉本地调试残留之后，4 次测试全部是 `Malloc failed`，形态统一了。
+之前见过的两次 `BLE assert intc.c 222, param 00000008` 没有再出现——
+那很可能也是残留代码改变了内存布局的后果，但样本太少，不下结论。
 
-| 现象 | 触发条件 |
+| 现象 | 出现情况 |
 | --- | --- |
-| `BLE_INIT: Malloc failed` / `rc=519` | 分配先失败，占多数 |
-| `BLE assert intc.c 222, param 00000008` | 内存勉强够，但注册 `ETS_RWBT_NMI_SOURCE` 时失败 |
+| `BLE_INIT: Malloc failed` / `rc=519` | 干净树上 4/4，确定性 |
+| `BLE assert intc.c 222, param 00000008` | 只在有残留的树上出现过 |
 
 **这是内存问题，不是中断分配器的问题。** 我一开始以为是后者（`board/interrupt.c`
 拒绝高于 `XCHAL_EXCM_LEVEL` 的线），但那个拒绝会打印
@@ -535,18 +542,23 @@ BLE controller 一次性要 **> 56 KB 的连续内部 DRAM**。Wi-Fi 占掉后�
 | WiFi 静态 RX 10→6、动态 32→16 | 5/6，重复测 4/8 |
 | WiFi 静态 RX 6→4、动态 16→8 | 2/6，更差 |
 | NimBLE 连接数 3→1、MTU 256→128、事件队列 30→12 | **0/5，更差** —— 这些参数不控制 controller 的 buffer |
+| `BT_CTRL_BLE_MAX_ACT` 6→2 | 腾出 3.7 KB（`afterble` 从 2568/2304 变成 6240/6144），**仍 `Malloc failed`** |
 
 ### 下一步
 
 BLE controller 的 buffer 不是在 NimBLE 的 Kconfig 里配的，而是在预编译的
 `libbtdm_app.a` 里按 `CONFIG_BT_CTRL_BLE_MAX_ACT` 等参数静态分配的。真正能减的是：
 
-1. `CONFIG_BT_CTRL_BLE_MAX_ACT` 6 → 2（同时降低 `_EFF`）
-2. `CONFIG_BT_CTRL_BLE_MAX_ACT_EFF` —— 实际生效的那个
-3. 或者确认 Wi-Fi 能否少占：`CONFIG_ESP_WIFI_RX_BA_WIN`、`ESP_WIFI_STATIC_RX_BUFFER_NUM`
-   里哪个是 31 KB 碎片的主要来源
+1. ~~`CONFIG_BT_CTRL_BLE_MAX_ACT` 6 → 2~~ —— 已试，只腾出 3.7 KB，不够
+2. 查清 BLE controller 那 56 KB 到底花在哪。`libbtdm_app.a` 里的分配是按
+   `BT_CTRL_BLE_MAX_ACT` 算的，但 6→2 只省 3.7 KB，说明大头不在 activity 上，
+   而在固定的 controller 数据结构
+3. 反过来压 Wi-Fi：31 KB 的最大块是碎片问题，不是总量问题（还有 59 KB 空闲）。
+   如果能减少 Wi-Fi 的中等块分配，最大块可能变大
+4. 或者接受这个限制。两个无线同时在线对这块板子本来就紧张 ——
+   内部 DRAM 只有 512 KB，Wi-Fi + BLE + RT-Thread + 应用要一起分
 
-都没验证过，不做承诺。
+前两条都需要读 `libbtdm_app.a` 的分配行为，那是预编译的，只能靠实测推断。
 
 ### 试过但无效的方案
 
