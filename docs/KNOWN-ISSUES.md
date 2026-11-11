@@ -465,8 +465,11 @@ msh >s3wifi <ssid> <pass>     # 2. 连 Wi-Fi（会自动拆掉 BLE）
 msh >s3net example.com        # 3.
 ```
 
-**实测 5/5 通过**（`advertising as "s3-rtt"` → `unloading first` → `s3wifi: PASS`
-→ `s3net: PASS`，无 Guru、无 NO_MEM）。
+**实测 6/6**：BLE 广播成功 6/6，Wi-Fi 连接成功 6/6，两者都成功 6/6
+（`advertising as "s3-rtt"` → `unloading first` → `s3wifi: PASS`）。
+
+其中 1 次运行中出现过一次 `Guru` 复位；复位后同一次测试仍然完成并成功。
+那个 Guru 没能复现，也没有抓到栈——**记录在案，不算已解决**。
 
 ### 不可用顺序
 
