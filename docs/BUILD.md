@@ -296,6 +296,24 @@ msh >
 `-Fix` 会逐个询问是否回退。未跟踪的文件不会被自动处理——`git clean` 会删文件，
 不该替你做这个决定。
 
+## 5c. 核对文档输出（有板子时）
+
+```powershell
+.\tools\check-docs.ps1 -WifiSsid <ssid> -WifiPass <pass>
+```
+
+它在板上按顺序跑文档里出现的所有命令，比对实际输出与
+`tools/expected-output.txt` 里的正则。
+
+**期望**：
+
+```
+RESULT: PASS - all 19 section(s) matched
+```
+
+改动任何命令的输出格式后都应该跑一次——否则文档会悄悄过时。这个脚本第一次
+跑就发现了 `s3wifiscan` 的两个崩溃，而那条命令在之前的回归里从未被执行过。
+
 ## 6. QEMU（可选）
 
 > `-NoPsram` 曾经**完全没生效**：注释说建到 `build-qemu/`，实际建到 `build/`，

@@ -19,6 +19,8 @@
 | `gdb-bt.ps1` | attach GDB、halt、打印双核 backtrace（`-StartQemu` 先起 QEMU）|
 | `fetch-upstream.ps1` | 把本仓库的改动应用到上游树 |
 | `verify-tree.ps1` | **检查上游树是否只含本仓库的改动**（见下）|
+| `check-docs.ps1` | **在板上跑文档里的命令，比对实际输出**（见下）|
+| `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
 它们漂移了：两份还固定着工具版本目录（`esp-15.2.0_20251204`、`cmake\4.0.3`、
@@ -50,6 +52,37 @@ RTC_NOINIT 计数器和诊断打印，引用了 `c5tcp` 测试。它们改的内
 .\tools\verify-tree.ps1          # 只报告
 .\tools\verify-tree.ps1 -Fix     # 逐个询问是否回退
 ```
+
+## `check-docs.ps1`：文档输出不能靠手抄
+
+文档里的示例 transcript 会和固件脱节，而**抄错一个字段名就会让读者怀疑整份文档**。
+上一轮手工比对发现问题（`kernel` vs `heap kernel`、`verdict` 的位置），
+这一轮把它做成了脚本——**第一次跑就崩了两个真 bug**（见
+[KNOWN-ISSUES](../docs/KNOWN-ISSUES.md) 第 14 条）。
+
+```powershell
+.\tools\check-docs.ps1 -List                       # 看有哪些节
+.\tools\check-docs.ps1                              # 跑不需要网络的
+.\tools\check-docs.ps1 -Only s3rt,s3smp             # 只跑这两节
+.\tools\check-docs.ps1 -WifiSsid <ssid> -WifiPass <pass>
+                                                     # 含网络节
+```
+
+**期望**：
+
+```
+  PASS  s3rt                 6 pattern(s)
+  ...
+RESULT: PASS - all 19 section(s) matched
+```
+
+清单在 `expected-output.txt`，每节是「命令名 + 若干正则」。规则写在文件头：
+**只匹配该命令自己打印的行**，数值用形状不用具体数字。
+
+**顺序很重要。** 脚本在一次启动里按清单顺序跑完所有命令。BLE 必须排在
+Wi-Fi 之前——Wi-Fi 起来后 BLE 拿不到那 56 KB 连续内部 DRAM
+（第 12 条）。清单的注释里写了这件事，免得下次有人重排后看到两个
+"失败"却其实是同一个已知约束。
 
 ## 参数
 

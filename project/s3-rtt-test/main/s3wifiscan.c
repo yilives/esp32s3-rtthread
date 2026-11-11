@@ -86,7 +86,24 @@ static int cmd_wifiscan(int argc, char **argv)
         return -1;
     }
     /*
-     * Create the station netif, exactly as s3wifi does.
+     * Create the station netif - and it has to be AFTER esp_wifi_init().
+     *
+     * esp_netif_create_default_wifi_sta() calls
+     * esp_wifi_set_default_wifi_sta_handlers(), which requires the Wi-Fi driver
+     * to be initialised. Called first, the ESP_ERROR_CHECK inside it aborts the
+     * boot outright:
+     *
+     *   ESP_ERROR_CHECK failed: esp_err_t 0x103 (ESP_ERR_INVALID_STATE)
+     *   func: esp_netif_create_default_wifi_sta
+     *   expression: esp_wifi_set_default_wifi_sta_handlers()
+     *
+     * Measured from a cold boot: `s3wifiscan` on its own reset the board every
+     * time, while `s3wifi` did not - s3wifi creates the netif after the init.
+     * This command created it first, and the comment below claimed that was the
+     * same order s3wifi uses. It was not.
+     *
+     * The rest of the note explains why the netif must exist at all.
+     *
      *
      * Not cosmetic: esp_wifi_start() attaches the interface to whatever netif
      * already exists, and the attach happens once. A scan-first sequence that
@@ -102,11 +119,6 @@ static int cmd_wifiscan(int argc, char **argv)
      * Returning NULL here is not fatal for a scan - the radio does not need a
      * netif - so it is reported and survived.
      */
-    if (esp_netif_create_default_wifi_sta() == RT_NULL)
-    {
-        rt_kprintf("s3wifiscan: no station netif (scan still works, DHCP will not)\n");
-    }
-
     /* ESP_ERR_INVALID_STATE just means the loop already exists, which is fine
      * when s3wifi ran first. Anything else would surface at the handler
      * registration below, which is where it actually matters. */
@@ -146,6 +158,33 @@ static int cmd_wifiscan(int argc, char **argv)
             rt_kprintf("s3wifiscan: esp_wifi_init failed (0x%x %s)\n",
                        err, esp_err_to_name(err));
             return -1;
+        }
+    }
+
+    /*
+     * Create the station netif only if it does not exist yet.
+     *
+     * esp_netif_create_default_wifi_sta() asserts when called twice - the
+     * second call reaches esp_netif_new_api() with a config whose handlers are
+     * already attached:
+     *
+     *   E esp_netif_lwip: esp_netif_new_api: Failed to configure netif
+     *   assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437
+     *
+     * So `s3wifi` followed by `s3wifiscan` reset the board. The first version of
+     * this command called it unconditionally, which was fine only when `s3wifi`
+     * had not run.
+     *
+     * esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") is the documented way to
+     * ask whether the default station netif exists. Its absence is not fatal for
+     * a scan - the radio does not need a netif - so a failure to create is
+     * reported and survived.
+     */
+    if (esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") == RT_NULL)
+    {
+        if (esp_netif_create_default_wifi_sta() == RT_NULL)
+        {
+            rt_kprintf("s3wifiscan: no station netif (scan still works, DHCP will not)\n");
         }
     }
 

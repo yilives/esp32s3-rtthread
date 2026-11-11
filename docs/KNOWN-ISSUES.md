@@ -615,6 +615,55 @@ DNS 和 socket 都成功，`connect` 被中止。
 
 ---
 
+## 14. `s3wifiscan` 的两处 netif 顺序错误（已修）
+
+`s3wifiscan` 是唯一一个最近几轮没有实际跑过的命令。为文档输出写检查脚本时，
+它连续暴露了两个崩溃。
+
+### 崩溃 1：netif 建在 `esp_wifi_init()` 之前
+
+冷启动直接跑 `s3wifiscan`，每次复位：
+
+```
+ESP_ERROR_CHECK failed: esp_err_t 0x103 (ESP_ERR_INVALID_STATE)
+func: esp_netif_create_default_wifi_sta
+expression: esp_wifi_set_default_wifi_sta_handlers()
+```
+
+`esp_netif_create_default_wifi_sta()` 内部要调
+`esp_wifi_set_default_wifi_sta_handlers()`，后者要求 Wi-Fi 驱动已初始化。
+而代码把它放在了 `esp_wifi_init()` 之前——注释还写着"和 `s3wifi` 一样的顺序"，
+实际 `s3wifi` 是 init 之后才建 netif。
+
+对照实验：冷启动 `s3wifi` 0 次 `ESP_ERROR_CHECK`、PASS；`s3wifiscan` 每次崩。
+
+### 崩溃 2：netif 重复创建
+
+修好 1 之后，`s3wifi` 之后再 `s3wifiscan` 又崩：
+
+```
+E esp_netif_lwip: esp_netif_new_api: Failed to configure netif
+assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437 (netif)
+```
+
+`esp_netif_create_default_wifi_sta()` **不能调两次**。改成先查
+`esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")`，不存在才创建。
+
+### 验证
+
+| 场景 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 冷启动 `s3wifiscan` | 每次复位 | PASS，扫到 22 个 AP |
+| `s3wifi` → `s3wifiscan` | 复位 | PASS |
+| 紧接 `s3net` | `tcpip.c:454 Invalid mbox` 复位 | PASS，512 bytes |
+
+### 怎么发现的
+
+不是靠手工测试，是靠**给文档输出写检查脚本**（`tools/check-docs.ps1`）。
+第一次跑就崩了。这两个 bug 存在了好几轮，因为 `s3wifiscan` 一直不在回归清单里。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -633,3 +682,4 @@ DNS 和 socket 都成功，`connect` 被中止。
 | 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |
 | 12 | 两个无线只能 BLE→Wi-Fi | 中 | BLE→Wi-Fi 已 6/6；Wi-Fi→BLE 确定性 `Malloc failed` |
 | 13 | `s3net` 偶发 `errno=113` | 低 | 长序列里见过 1 次，直接测 4/4 通过；样本不足 |
+| 14 | `s3wifiscan` netif 顺序错误 | 高 | 已修：init 之后建 netif，且不重复创建 |

@@ -1,0 +1,152 @@
+# Expected serial output for the documented commands.
+#
+# Read by tools/check-docs.ps1, which runs each command on a board and compares
+# the result. The purpose is narrow: catch documentation that has drifted from
+# what the firmware actually prints. A reader who sees one stale example has no
+# reason to trust the rest.
+#
+# Format:
+#
+#   [command]
+#   <regex>
+#   <regex>
+#   ...
+#
+# Each line is a pattern the captured output for that command must contain.
+# Patterns are matched anywhere in the captured text, not line-anchored, so
+# columns and surrounding chatter do not matter. Use `(?m)` anchors explicitly
+# when a line position matters.
+#
+# Rules for what belongs here:
+#
+#   - Only output that the command itself prints. Not boot-time messages, not
+#     the output of the selftest thread.
+#   - Values are matched by shape, not by number: "tick     : \d+, \d+ Hz" not
+#     "tick     : 35128, 1000 Hz". A number in a pattern is a test that fails
+#     every run.
+#   - Anything that legitimately varies (addresses, timings, RSSI) needs a
+#     pattern loose enough to survive it but strict enough to catch a renamed
+#     field.
+#
+# ORDER MATTERS. The checker runs sections top to bottom, in one boot.
+#
+# BLE must come before anything that initialises Wi-Fi. With Wi-Fi up, the BLE
+# controller cannot get the ~56 KB of contiguous internal DRAM it needs and
+# fails with BLE_INIT: Malloc failed (docs/KNOWN-ISSUES.md section 12). A
+# checker that ran s3wifiscan first would report two failures that are really
+# one documented ordering constraint.
+#
+# Commands that depend on hardware not on this board (an I2C device, an SPI
+# loopback jumper) assert only their "nothing found" branch, which is what a
+# bare board prints.
+
+[s3rt]
+s3rt v\d+\.\d+ - ESP32-S3 / RT-Thread \d+\.\d+\.\d+
+  tick      : \d+, \d+ Hz
+  current   : \S+ at priority \d+
+  counters  : a=\d+ b=\d+
+heap kernel: \d+ total, \d+ used, \d+ peak
+  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free
+
+[s3smp]
+s3smp: CPUS_NR=\d+, this core=\d+
+cpu0: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
+cpu1: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
+
+[s3heap]
+idf heap:
+  internal 8-bit :\s+\d+ free,\s+\d+ largest,\s+\d+ min ever
+  internal 32-bit:\s+\d+ free
+  internal DMA   :\s+\d+ free
+  IRAM 8-bit     :\s+\d+ free
+  PSRAM 8-bit    :\s+\d+ free,\s+\d+ largest
+  total free     :\s+\d+
+
+[free]
+total    : \d+
+used     : \d+
+maximum  : \d+
+available: \d+
+
+[list thread]
+thread       cpu bind pri  status
+tshell
+tidle0
+tidle1
+[i2cscan]
+i2cscan: probing i2c0 \(\d+ Hz\)
+i2cscan: idle levels SCL\(GPIO\d+\)=\d SDA\(GPIO\d+\)=\d
+i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
+
+[spiloop]
+spiloop: spi0 \d+ bytes, \d+ cycles = ~\d+ us \(expected ~\d+ us at \d+ Hz\)
+spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
+spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
+
+[s3adc 1 3]
+s3adc: adc1 ch3 \(GPIO\d+\) = \d+ / \d+ \(\d+\.\d% of full scale\)
+
+[s3wdt]
+s3wdt: armed=\d feeds=\d+ paused=\d timeout=\d+ ms period=\d+ ms
+s3wdt: `s3wdt hang` proves the reset path
+
+[s3fs]
+s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
+s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
+
+[s3fs read]
+s3fs read: PASS, \d+ bytes intact after reboot
+
+[s3fsbench write]
+s3fsbench: FAT on "storage", \d+-byte sectors, \d+-byte clusters
+s3fsbench: volume \d+ KB total, \d+ KB free
+s3fsbench: write  256 KB in \d+ ms -> \d+ KB/s
+
+[s3ble]
+s3ble: bringing up the BLE controller on the FreeRTOS shim
+  nvs_flash_init               ok
+  nimble_port_init             ok
+  ble_gatts_count_cfg          ok
+  ble_gatts_add_svcs           ok
+  nimble_port_freertos_init    ok
+s3ble: PASS, host synced in \d+ ms, addr ([0-9a-f]{2}:){5}[0-9a-f]{2}
+s3ble: advertising as "[^"]+" \(service 0x[0-9A-Fa-f]{4}, chr 0x[0-9A-Fa-f]{4} read, 0x[0-9A-Fa-f]{4} write\)
+
+[s3ble info]
+s3ble info: up=\d synced=\d advertising=\d conns=\d last_disc=\d+ adv_err=\d+
+
+[s3wifi <ssid> <pass>]
+s3wifi: bringing up esp_wifi on the FreeRTOS shim
+  nvs_flash_init             ok
+  esp_netif_init             ok
+  event loop create default  ok
+  create default wifi sta    ok
+  esp_wifi_init              ok
+  esp_wifi_set_mode          ok
+  esp_wifi_start             ok
+esp_wifi_connect           ok
+s3wifi: PASS, connected to "[^"]+"
+s3wifi: ip \d+\.\d+\.\d+\.\d+ mask \d+\.\d+\.\d+\.\d+ gw \d+\.\d+\.\d+\.\d+
+
+[s3wifiscan]
+s3wifiscan: scanning \(2\.4 GHz only - the S3 has no 5 GHz radio\)
+# ch  rssi  bssid              ssid
+s3wifiscan: \d+ AP\(s\), all on channels 1\.\.14 = the 2\.4 GHz band
+
+[s3net example.com]
+s3net: resolving example.com
+  gethostbyname          ok -> \d+\.\d+\.\d+\.\d+
+  socket                 ok \(\d+\)
+  connect                ok \(0\)
+  send                   ok \(\d+\)
+  recv                   ok \(\d+ bytes\)
+s3net: PASS, \d+ byte\(s\) received over TCP
+
+[s3ulp]
+s3ulp: submitting CMD_COUNT, blocking
+s3ulp: PASS, ULP completed in \d+ us, result=0x[0-9a-f]+
+s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
+
+[s3ulp stop]
+s3ulp: PASS, halted - no completions in \d+ ms \(total \d+\)
+
