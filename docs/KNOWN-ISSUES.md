@@ -664,6 +664,66 @@ assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437 (netif)
 
 ---
 
+## 15. `s3fs erase` 之后无法挂载（已修）
+
+### 现象
+
+```
+msh >s3fs unmount
+msh >s3fs erase
+s3fs: erased; next `s3fs` will format and mount
+
+msh >s3fs
+E vfs_fat_spiflash: f_mount failed with error: "No filesystem detected" [13]
+s3fs: mount failed 0xffffffff (ESP_FAIL)
+s3fs: is the partition table flashed? `storage` starts at 0x310000 and is 1 MB
+```
+
+**第二次 `s3fs` 也一样失败。** 只有重启才能恢复，因为 `s_fs_mounted_once`
+是静态变量，重启才会清零。
+
+也就是说 `erase` 打印的那句"next `s3fs` will format and mount"**是假的**。
+
+### 根因
+
+`s3_fs_mount()` 里：
+
+```c
+.format_if_mount_failed = !s_fs_mounted_once,
+```
+
+这个标志是有意加的：`format_if_mount_failed = true` 会在任何挂载失败时
+静默格式化，把用户数据擦掉（见第 2 条）。但 `erase` 是**主动**擦除，
+之后本该允许格式化——标志没复位，格式化就永远被禁止。
+
+### 修法
+
+`erase` 成功后重置 `s_fs_mounted_once = RT_FALSE`。
+
+### 验证
+
+```
+s3fs unmount
+s3fs erase
+s3fs
+  W vfs_fat_spiflash: FatFS mount failed [13]
+  I vfs_fat_spiflash: Formatting FATFS partition, allocation size=4096
+  I vfs_fat_spiflash: Mounting again
+  s3fs: PASS, mounted at /storage, wrote and read back 511 bytes
+```
+
+### 顺带：`s3fs format` 现在也 suspend Wi-Fi
+
+`erase` 会先停掉 Wi-Fi 再擦（第 2 条），`format` 没有——两个做同类事情的
+命令，一个有保护一个没有，而且没有注释解释原因。
+
+实测 Wi-Fi 关联时 `format` 3/3 成功，所以这**不是**在修一个观察到的故障，
+而是补上同一个窗口：站点从自己的任务里写 NVS，和长时间 flash 操作不能共存。
+`erase` 曾经在第四个窗口静默挂死；`format` 做的工作少、目前侥幸躲过，
+这不等于安全。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -683,3 +743,4 @@ assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437 (netif)
 | 12 | 两个无线只能 BLE→Wi-Fi | 中 | BLE→Wi-Fi 已 6/6；Wi-Fi→BLE 确定性 `Malloc failed` |
 | 13 | `s3net` 偶发 `errno=113` | 低 | 长序列里见过 1 次，直接测 4/4 通过；样本不足 |
 | 14 | `s3wifiscan` netif 顺序错误 | 高 | 已修：init 之后建 netif，且不重复创建 |
+| 15 | `s3fs erase` 后无法挂载 | 高 | 已修：erase 成功后复位 `s_fs_mounted_once`；format 也停 Wi-Fi |

@@ -220,7 +220,13 @@ s3fs: erasing 1048576 bytes at 0x310000 ...
 s3fs: Wi-Fi suspended for the erase
 s3fs: Wi-Fi restarted and reconnecting
 s3fs: erased; next `s3fs` will format and mount
+
+msh >s3fs
+s3fs: PASS, mounted at /storage, wrote and read back 511 bytes
 ```
+
+擦除之后**不需要重启**：`s3fs erase` 会复位内部的"曾经挂载过"标志，
+所以下一次 `s3fs` 会格式化并挂载空分区。
 
 **擦除期间无线栈必须停。** Wi-Fi 自己的 NVS 写会和长擦除交错，导致 flash 的
 跨核握手不再完成——表现为静默挂死，没有 panic 也没有看门狗。`s3fs erase` 现在

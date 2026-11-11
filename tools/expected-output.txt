@@ -142,6 +142,16 @@ s3net: resolving example.com
   recv                   ok \(\d+ bytes\)
 s3net: PASS, \d+ byte\(s\) received over TCP
 
+[s3fs unmount]
+s3fs unmount
+
+[s3fs erase]
+s3fs: erasing \d+ bytes at 0x[0-9a-f]+
+s3fs: erased; next `s3fs` will format and mount
+
+[s3fs format]
+s3fs: formatted storage
+
 [s3ulp]
 s3ulp: submitting CMD_COUNT, blocking
 s3ulp: PASS, ULP completed in \d+ us, result=0x[0-9a-f]+

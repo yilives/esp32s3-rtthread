@@ -323,6 +323,27 @@ static int cmd_s3fs(int argc, char **argv)
             return -1;
         }
 
+        /*
+         * The partition is now blank, so the next mount MUST be allowed to
+         * format it.
+         *
+         * s_fs_mounted_once is what makes format_if_mount_failed false after the
+         * first successful mount - a deliberate guard so a mount failure does
+         * not silently wipe user data (see the note at s3_fs_mount). But erase
+         * has just removed the filesystem on purpose, and leaving the flag set
+         * made every later `s3fs` fail:
+         *
+         *   E vfs_fat_spiflash: f_mount failed with error:
+         *       "No filesystem detected" [13]
+         *   s3fs: mount failed 0xffffffff (ESP_FAIL)
+         *
+         * Measured: after `s3fs unmount` + `s3fs erase`, both the first and the
+         * second `s3fs` failed, so "next `s3fs` will format and mount" - the
+         * line this command prints - was untrue. Only a reboot recovered,
+         * because that resets the flag.
+         */
+        s_fs_mounted_once = RT_FALSE;
+
         rt_kprintf("s3fs: erased; next `s3fs` will format and mount\n");
         return 0;
     }
@@ -335,10 +356,35 @@ static int cmd_s3fs(int argc, char **argv)
             return -1;
         }
 
+        /*
+         * Radio down first, same as `erase` above.
+         *
+         * Measured: formatting with Wi-Fi associated happened to succeed 3/3,
+         * so this is not fixing an observed failure. It is closing the same
+         * window `erase` closed: the station writes NVS from its own task, and
+         * those writes cannot share the cache-disable window with a long run of
+         * flash operations. `erase` used to fail silently at the fourth window;
+         * formatting does less work and currently gets away with it, which is
+         * not the same as being safe.
+         *
+         * The asymmetry was the real defect: two commands doing the same kind
+         * of thing, one guarded and one not, with no note explaining why.
+         */
+        if (s3_wifi_suspend_for_flash != RT_NULL &&
+            s3_wifi_suspend_for_flash() == 0)
+        {
+            rt_kprintf("s3fs: Wi-Fi suspended for the format\n");
+        }
+
         fs_wdt_pause();
         err = esp_vfs_fat_spiflash_format_rw_wl(S3FS_MOUNT_POINT,
                                                 S3FS_PARTITION);
         fs_wdt_resume();
+
+        if (s3_wifi_resume_after_flash != RT_NULL)
+        {
+            (void)s3_wifi_resume_after_flash();
+        }
         if (err != ESP_OK)
         {
             rt_kprintf("s3fs: format failed 0x%x (%s)\n", err,
