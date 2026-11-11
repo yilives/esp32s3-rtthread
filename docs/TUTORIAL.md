@@ -59,7 +59,11 @@ s3smp: CPUS_NR=2, this core=1
 | `cpu0 switches` | > 0 且在涨 | CPU0 没在调度 |
 | `cpu1 switches` | > 0 且在涨 | CPU1 没参与调度 |
 | `lock_nest` | **0** | 有临界区没退出 |
-| `irq_nest` | **0** | 有中断没返回 |
+| `irq_nest` | **0 或 1** | 大于 1 说明有中断没返回 |
+
+`irq_nest` 是**瞬时值**：命令打印的那一刻该核正在处理几层中断。恰好撞上 tick
+中断时就是 1，这是正常的。连续跑几次看到 0 和 1 交替不必担心；**持续大于 1**
+才是问题。
 
 连续跑几次，`switches` 必须单调递增。**`lock_nest` 或 `irq_nest` 不为 0 是硬故障**。
 
@@ -191,14 +195,19 @@ s3fs read: PASS, 511 bytes intact after reboot
 msh >s3fsbench
 ```
 
-实测数据（1 MB 分区，4 KB 扇区）：
+实测数据（1 MB 分区，4 KB 扇区，**无线未起**的基线）：
 
 ```
-s3fsbench: write  256 KB in 1064 ms -> 240 KB/s
+s3fsbench: bulk write 256 KB -> 79 writes (290944 B), 71 erases (290816 B)
+s3fsbench: write  256 KB in 1045 ms -> 244 KB/s
 s3fsbench: read   256 KB in 30 ms -> 8533 KB/s
 s3fsbench: create 32 x 64 B in 5281 ms (6 files/s, 165 ms each)
 s3fsbench: delete 32 files in 3512 ms (109 ms each)
 ```
+
+**基线要说清楚。** 如果 Wi-Fi 已经跑过（哪怕 `s3fsbench` 会自己把它停掉），
+同一条命令是 4474 ms / 57 KB/s —— 数字差 4 倍，两个都是对的，只是测的前提不同。
+详见 [FILESYSTEM.md](FILESYSTEM.md) 的「无线栈起来之后」一节。
 
 **小文件慢是正常的**，原因和调优见 [FILESYSTEM.md](FILESYSTEM.md)。
 

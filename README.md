@@ -98,15 +98,30 @@ python -m esptool --chip esp32s3 -p COM19 -b 921600 write-flash `
 ```
 msh >s3rt
 s3rt v0.1 - ESP32-S3 / RT-Thread 5.4.0
-  tick      : 3009, 1000 Hz
+  tick      : 35128, 1000 Hz
   current   : tshell at priority 20
-  ...
-  verdict : PASS
+  counters  : a=36 b=71
+  heap kernel: 130976 total, 28816 used, 32640 peak
+  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free
 
 msh >s3smp
 s3smp: CPUS_NR=2, this core=1
-  cpu0: switches=44 current=tidle0 lock_nest=0 irq_nest=0
-  cpu1: switches=102 current=tshell lock_nest=0 irq_nest=0
+  cpu0: switches=103 current=tidle0 lock_nest=0 irq_nest=1
+  cpu1: switches=335 current=tshell lock_nest=0 irq_nest=0
+```
+
+`irq_nest` 是瞬时值：打印那一刻该核正在处理几层中断。撞上 tick 中断时就是 1，
+这是正常的；持续大于 1 才是问题。`lock_nest` 必须为 0。
+
+```
+msh >s3heap
+idf heap:
+  internal 8-bit :    93512 free,    53248 largest,    93512 min ever
+  internal 32-bit:    93512 free
+  internal DMA   :    85724 free
+  IRAM 8-bit     :        0 free
+  PSRAM 8-bit    :  8386120 free,  8257536 largest
+  total free     :  8479632
 ```
 
 ---

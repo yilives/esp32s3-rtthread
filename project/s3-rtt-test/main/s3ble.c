@@ -92,6 +92,20 @@ static volatile int s_ble_sync_rc;
  * where Bluetooth is already running - measured by running `s3ble` twice. */
 static rt_bool_t s_ble_up;
 
+/*
+ * Set while the stack is being torn down.
+ *
+ * nimble_port_stop() completes the current advertising procedure, which
+ * delivers BLE_GAP_EVENT_ADV_COMPLETE to the gap callback - and that callback
+ * restarts advertising unconditionally. During teardown the restart fails
+ * (rc=30) and prints "s3ble: adv_set_fields failed rc=30" in the middle of the
+ * `s3wifi` output, where it reads like a Wi-Fi problem.
+ *
+ * Measured: every `s3wifi` after a `s3ble` printed that line, interleaved
+ * between "BT up: unloading first" and "ok".
+ */
+static rt_bool_t s_ble_shutting_down;
+
 /* Advertising state, readable from the shell.
  *
  * s3_ble_adv_started is set by s3_ble_start_advertising() and cleared by the
@@ -259,9 +273,16 @@ static int s3_ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_ADV_COMPLETE:
         /* Either the duration expired or a connect raced the stop. Restarting
          * unconditionally is what the IDF example does, and it keeps the board
-         * discoverable without needing a command. */
+         * discoverable without needing a command.
+         *
+         * Except during teardown: nimble_port_stop() completes the in-flight
+         * advertising procedure, which arrives here, and restarting then fails
+         * and prints into whatever command triggered the shutdown. */
         s_ble_adv_started = 0;
-        s3_ble_start_advertising();
+        if (!s_ble_shutting_down)
+        {
+            s3_ble_start_advertising();
+        }
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -429,16 +450,19 @@ rt_err_t s3ble_shutdown_quiet(void)
         return RT_EOK;
     }
 
+    s_ble_shutting_down = RT_TRUE;
     (void)nimble_port_stop();
 
     if (nimble_port_deinit() != ESP_OK)
     {
+        s_ble_shutting_down = RT_FALSE;
         return -RT_ERROR;
     }
 
     s_ble_up = RT_FALSE;
     s_ble_synced = 0;
     s_ble_adv_started = 0;
+    s_ble_shutting_down = RT_FALSE;
     return RT_EOK;
 }
 

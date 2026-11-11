@@ -578,6 +578,43 @@ BLE controller 的 buffer 不是在 NimBLE 的 Kconfig 里配的，而是在预�
 
 ---
 
+## 13. `s3net` 偶发 `errno=113`（ECONNABORTED）
+
+### 现象
+
+```
+msh >s3net example.com
+s3net: resolving example.com ...
+  gethostbyname          ok -> 172.66.147.243
+  socket                 ok (56)
+  connect                FAILED errno=113 (Software caused connection abort)
+s3net: command failed -1.
+```
+
+DNS 和 socket 都成功，`connect` 被中止。
+
+### 复现情况
+
+| 场景 | 结果 |
+| --- | --- |
+| `s3wifiscan` → `s3ble` → `s3wifi` → `s3ble` → `s3net` | 出现过 1 次 |
+| `s3ble` → `s3wifi` → `s3net`，连续 4 次 | **4/4 PASS** |
+
+只在那次较长的序列里见过一次。之后 4 次直接测试全部通过。
+
+### 状态
+
+**未定位，样本不足。** 记在这里是因为它出现在一次真实的运行里，而不是因为
+已经知道原因。下次复现时应该抓：
+
+1. `connect` 返回前是否有 `WIFI_EVENT_STA_DISCONNECTED`
+2. 是否与 `s3ble` 重新初始化（`nimble_port_freertos_init` 会重建 host 任务）
+   有关 —— 那次失败前刚做过一次 `s3ble`
+
+`ECONNABORTED` 在 lwIP 里常见于连接建立过程中底层接口被拆除。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -594,4 +631,5 @@ BLE controller 的 buffer 不是在 NimBLE 的 Kconfig 里配的，而是在预�
 | 2b | 单核下 ULP 与 Wi-Fi 互斥 | 中 | 需要 ULP 就用双核；这是单核的固有限制 |
 | 10 | 单核 ULP+Wi-Fi 挂死 | 中 | 同 2b，已定位，非偶发 |
 | 11 | I2C 把超时/仲裁误判为 ACK | 中 | 已修：三个错误位都算失败 |
-| 12 | 两个无线只能 BLE→Wi-Fi | 中 | BLE→Wi-Fi 已 5/5；Wi-Fi→BLE 仍 `intc.c:222`，在预编译库里改不动 |
+| 12 | 两个无线只能 BLE→Wi-Fi | 中 | BLE→Wi-Fi 已 6/6；Wi-Fi→BLE 确定性 `Malloc failed` |
+| 13 | `s3net` 偶发 `errno=113` | 低 | 长序列里见过 1 次，直接测 4/4 通过；样本不足 |
