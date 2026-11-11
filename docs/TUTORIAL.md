@@ -182,20 +182,26 @@ s3wdt: `s3wdt hang` proves the reset path
 ```
 msh >s3wdt hang
 s3wdt: suspending the feeder and spinning; the board must reset in ~5000 ms
-s3wdt: feeds so far = 26
+s3wdt: feeds so far = 30
 ```
 
-然后**什么都别做**，等 5 秒。板子会自己重启。
-
-**期望重启原因**：
+然后**什么都别做**，等 5 秒。板子会自己重启，重启后能看到：
 
 ```
-rst:0x7 (TG0WDT_SYS_RST)
+ESP-ROM:esp32s3-20210327
+rst:0x7 (TG0WDT_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+W (52) boot.esp32s3: PRO CPU has been reset by WDT.
+W (57) boot.esp32s3: APP CPU has been reset by WDT.
 ```
 
 `TG0WDT_SYS_RST` 是关键。如果是 `RTCWDT` 或 `POWERON`，说明不是我们的看门狗触发的。
 
+**两个核都被复位**——`PRO CPU`（core 0）和 `APP CPU`（core 1）各一行。
+这是看门狗真的接到硬件、并且覆盖到第二个核的证据。
+
 > **这一步验证了什么**：看门狗接到了真实的硬件复位，而不是一个没人处理的中断。
+> 只看到"即将复位"那句话不算数——看门狗根本没接线的板子也能打印那句话。
+> 判据是复位**原因**和两个核的复位横幅。
 
 ---
 

@@ -48,14 +48,21 @@ if (-not (Test-Path $expectFile)) { throw "missing $expectFile" }
 # lines starting with '#' are ignored.
 
 $sections = [ordered]@{}
-$current = $null
+$reboots  = @{}
+$current  = $null
 foreach ($line in Get-Content $expectFile) {
     $t = $line.Trim()
     if (-not $t) { continue }
     if ($t.StartsWith('#')) { continue }
-    if ($t -match '^\[(.+)\]$') {
-        $current = $Matches[1]
+    if ($t -match '^\[(!?)(.+)\]$') {
+        # The leading "!" marks a section whose command reboots the board. It is
+        # stripped from the name (which is also the command) and remembered, so
+        # the driver can keep capturing across the restart and the run order can
+        # put these last.
+        $reboot = ($Matches[1] -eq '!')
+        $current = $Matches[2]
         $sections[$current] = New-Object System.Collections.ArrayList
+        $reboots[$current] = $reboot
         continue
     }
     if (-not $current) { throw "pattern before any [section]: $t" }
@@ -122,8 +129,15 @@ if ($LASTEXITCODE -ne 0) {
 # passing a list of commands through quoting.
 $driver = Join-Path $env:TEMP 's3-check-docs.py'
 
+# Reboot sections last: everything after one would run against a freshly
+# booted device, so anything that depends on state built earlier must come
+# first. Order within each group is the order in the file.
+$ordered = @()
+foreach ($k in $selected) { if (-not $reboots[$k]) { $ordered += $k } }
+foreach ($k in $selected) { if ($reboots[$k])     { $ordered += $k } }
+
 $spec = [ordered]@{}
-foreach ($k in $selected) { $spec[$k] = @($sections[$k]) }
+foreach ($k in $ordered) { $spec[$k] = @{ patterns = @($sections[$k]); reboot = [bool]$reboots[$k] } }
 
 $payload = @{
     port        = $Port
@@ -196,13 +210,20 @@ WAIT = {
 }
 DEFAULT_WAIT = 20
 
+# A reboot section deliberately resets the board. It needs longer than any
+# other section (the watchdog has to expire first), and the capture spans the
+# restart naturally - the same serial port keeps receiving the boot banner.
+REBOOT_WAIT = 30
+
 results = []
-for name, patterns in CFG["sections"].items():
+for name, spec in CFG["sections"].items():
+    patterns = spec["patterns"]
+    reboots = spec.get("reboot", False)
     # A section name may carry placeholders for the credentials; the section
     # name IS the command, so substituting here is what makes
     # "s3wifi <ssid> <pass>" runnable without a special case per command.
     cmd = name.replace("<ssid>", CFG["wifi_ssid"]).replace("<pass>", CFG["wifi_pass"])
-    wait = WAIT.get(name, WAIT.get(cmd, DEFAULT_WAIT))
+    wait = REBOOT_WAIT if reboots else WAIT.get(name, WAIT.get(cmd, DEFAULT_WAIT))
 
     mark = len(raw)
     s.write((cmd + "\r\n").encode())
@@ -212,6 +233,19 @@ for name, patterns in CFG["sections"].items():
         raw.extend(s.read(4096))
 
     out = bytes(raw[mark:]).decode("utf-8", "replace").replace("\r", "\n")
+
+    # After a reboot the shell has to be prompted again before the next section
+    # can run, exactly as at boot.
+    if reboots:
+        t1 = time.time()
+        while time.time() - t1 < 8:
+            raw.extend(s.read(4096))
+        s.write(b"\r\n")
+        s.flush()
+        t1 = time.time()
+        while time.time() - t1 < 5:
+            raw.extend(s.read(4096))
+
     if CFG["dump"]:
         print("=== %s ===\n%s" % (name, out))
 

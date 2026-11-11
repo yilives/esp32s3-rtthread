@@ -117,6 +117,23 @@ s3adc: adc1 ch3 \(GPIO\d+\) = \d+ / \d+ \(\d+\.\d% of full scale\)
 s3wdt: armed=\d feeds=\d+ paused=\d timeout=\d+ ms period=\d+ ms
 s3wdt: `s3wdt hang` proves the reset path
 
+# Sections marked with a "!" prefix reboot the board. The checker runs them
+# last, because everything after one would be executing against a freshly
+# booted device rather than the state the earlier sections left behind.
+#
+# The capture continues across the restart, so these patterns can match the
+# reset banner as well as the command's own output. What they assert is the
+# reset CAUSE - rst:0x7 is TG0WDT_SYS_RST, the timer group watchdog, which is
+# the only thing that proves the watchdog reaches the hardware. A test that only
+# checked the command printed "resetting now" would pass on a board whose
+# watchdog was never wired up.
+
+[!s3wdt hang]
+s3wdt: suspending the feeder and spinning; the board must reset in ~\d+ ms
+s3wdt: feeds so far = \d+
+rst:0x7 \(TG0WDT_SYS_RST\)
+has been reset by WDT
+
 [s3fs]
 s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
