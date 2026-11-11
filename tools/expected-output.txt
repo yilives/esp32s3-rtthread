@@ -100,7 +100,16 @@ s3fs read: PASS, \d+ bytes intact after reboot
 [s3fsbench write]
 s3fsbench: FAT on "storage", \d+-byte sectors, \d+-byte clusters
 s3fsbench: volume \d+ KB total, \d+ KB free
+s3fsbench: measure on a freshly formatted volume
+s3fsbench: bulk write 256 KB -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
 s3fsbench: write  256 KB in \d+ ms -> \d+ KB/s
+
+[s3fsbench small]
+s3fsbench: create 32 small files -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
+s3fsbench: overwrite one file 8x -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
+s3fsbench: create 32 x 64 B in \d+ ms
+s3fsbench: overwrite one file 8x in \d+ ms
+s3fsbench: delete 32 files in \d+ ms
 
 [s3ble]
 s3ble: bringing up the BLE controller on the FreeRTOS shim

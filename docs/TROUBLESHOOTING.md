@@ -135,12 +135,24 @@ sdkconfig:
 ```
 msh >free
 total    : 130976
-used     : 63344
-available: 67632     ← 这个数不能太小
+used     : 52144
+maximum  : 53312
+available: 78832     ← 这个数不能太小
 ```
 
-Wi-Fi + BLE 起来后至少要有 **几 KB**。不够就调大
-`CONFIG_IDF_RTTHREAD_HEAP_SIZE`（上限约 128 KB，再大 DRAM 放不下）。
+实测各阶段（同一镜像）：
+
+| 阶段 | used | available |
+| --- | --- | --- |
+| 刚开机 | 28816 | 102160 |
+| BLE 起来 | ~34000 | ~97000 |
+| Wi-Fi 也起来 | 52144 | 78832 |
+
+**最坏情况是双无线都在跑**，`available` 约 78 KB。低于 **10 KB** 就该担心了——
+lwIP 给每个线程建 per-thread 信号量，堆耗尽时 `thread_sem_init` 失败，
+表现为 `tcpip_send_msg_wait_sem (Invalid mbox)` 断言。
+
+不够就调大 `CONFIG_IDF_RTTHREAD_HEAP_SIZE`（上限约 128 KB，再大 DRAM 放不下）。
 
 ### `s3net` 报 `assert failed: tcpip_send_msg_wait_sem (Invalid mbox)`
 

@@ -365,6 +365,27 @@ static int s3_bench_run(rt_bool_t do_write, rt_bool_t do_read, rt_bool_t do_smal
     rt_kprintf("s3fsbench: volume %u KB total, %u KB free\n",
                (unsigned)(total_bytes / 1024), (unsigned)(free_bytes / 1024));
 
+    /*
+     * Say whether this volume has been used before, because the numbers depend
+     * on it.
+     *
+     * Measured on the same image, same partition, one command apart:
+     *
+     *   freshly formatted : 152 writes / 136 erases / 5374 ms
+     *   used for a while   : 190 writes / 170 erases / 6989 ms
+     *
+     * Over 20% apart, and not drift - the write count is exactly reproducible
+     * on each kind of volume (190 twice in a row, 152 twice in a row). A used
+     * volume has its directory entries spread out, so creating a file updates
+     * more FAT sectors, and every FAT sector write is an erase.
+     *
+     * Without this line the difference reads as a performance regression. The
+     * `free` figure is the tell: a volume that has only ever held the benchmark
+     * reports the full size, one that has been formatted reports slightly less.
+     */
+    rt_kprintf("s3fsbench: measure on a freshly formatted volume - a used one "
+               "gives ~25%% more writes and ~30%% more time\n");
+
     if (do_write)
     {
         rt_uint32_t ms = 0, kbps = 0;
