@@ -19,16 +19,38 @@ if(NOT DEFINED RTTHREAD_ROOT OR RTTHREAD_ROOT STREQUAL "")
     if(DEFINED ENV{RTTHREAD_ROOT} AND NOT "$ENV{RTTHREAD_ROOT}" STREQUAL "")
         set(RTTHREAD_ROOT "$ENV{RTTHREAD_ROOT}")
     else()
-        get_filename_component(_s3_repo_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
-        set(RTTHREAD_ROOT "${_s3_repo_root}/../rt-thread")
-        if(NOT EXISTS "${RTTHREAD_ROOT}/src/scheduler_mp.c")
+        # Probe a few layouts instead of computing one path.
+        #
+        # This used to compute `<CMakeLists dir>/../../../rt-thread` and stop
+        # there. In this repository's layout (project/s3-rtt-test/) that lands
+        # on `<repo>/rt-thread`, which is not where a sibling checkout lives -
+        # so a clean configure failed with "no RT-Thread checkout was found",
+        # while a build directory that already had RTTHREAD_ROOT cached kept
+        # working. That is the worst kind: it breaks only for new users.
+        #
+        # Candidates, in order of specificity:
+        #   make:    <repo>/project/s3-rtt-test/ -> <repo>/../rt-thread
+        #   in-repo: <repo>/project/s3-rtt-test/ -> <repo>/rt-thread
+        #   flat:    <dir>/                      -> <dir>/../rt-thread
+        set(_s3_rtt_candidates
+            "${CMAKE_CURRENT_LIST_DIR}/../../../rt-thread"
+            "${CMAKE_CURRENT_LIST_DIR}/../../rt-thread"
+            "${CMAKE_CURRENT_LIST_DIR}/../rt-thread")
+        set(RTTHREAD_ROOT "")
+        foreach(_cand IN LISTS _s3_rtt_candidates)
+            if(EXISTS "${_cand}/src/scheduler_mp.c")
+                get_filename_component(RTTHREAD_ROOT "${_cand}" ABSOLUTE)
+                break()
+            endif()
+        endforeach()
+        if(RTTHREAD_ROOT STREQUAL "")
             message(FATAL_ERROR
-                "RTTHREAD_ROOT is not set and no RT-Thread checkout was found at "
-                "'${RTTHREAD_ROOT}'.\n"
+                "RTTHREAD_ROOT is not set and no RT-Thread checkout was found. "
+                "Looked for src/scheduler_mp.c under:\n"
+                "  ${_s3_rtt_candidates}\n"
                 "Pass -DRTTHREAD_ROOT=<path>, or set the RTTHREAD_ROOT environment "
                 "variable, or place the checkout next to this repository.")
         endif()
-        get_filename_component(RTTHREAD_ROOT "${RTTHREAD_ROOT}" ABSOLUTE)
     endif()
 endif()
 
@@ -50,6 +72,22 @@ endif()
 # makes the variable safe to interpolate anywhere IDF might use it.
 file(TO_CMAKE_PATH "${RTTHREAD_ROOT}" RTTHREAD_ROOT)
 get_filename_component(RTTHREAD_ROOT "${RTTHREAD_ROOT}" ABSOLUTE)
+
+# Publish the resolved path as a CACHE variable.
+#
+# components/rtthread/CMakeLists.txt reads it with
+#
+#   if(DEFINED CACHE{RTTHREAD_ROOT}) ... else() $ENV{RTTHREAD_ROOT}
+#
+# and a plain set() here is invisible to it - components are configured in a
+# different scope. Without this a clean configure stops with
+#
+#   CMake Error at components/rtthread/CMakeLists.txt:48:
+#     RTTHREAD_ROOT is not set.
+#
+# even though the message on the line above just printed the path. It only
+# appeared to work while an old build directory still had the value cached.
+set(RTTHREAD_ROOT "${RTTHREAD_ROOT}" CACHE PATH "RT-Thread checkout" FORCE)
 
 message(STATUS "s3-rtt-test: RTTHREAD_ROOT=${RTTHREAD_ROOT}")
 

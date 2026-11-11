@@ -270,6 +270,24 @@ msh >
 
 ---
 
+## 5a. 第一次构建：确认 `build/` 是空的
+
+```powershell
+Remove-Item .\project\s3-rtt-test\build -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+**这不是可选的谨慎，是必要的验证。** 一个已有的 `build/` 会把
+`RTTHREAD_ROOT` 留在 CMake cache 里，于是即使顶层 CMakeLists 有 bug 也能编过。
+删掉之后重新 configure 才能证明这套 CMake 是自洽的。
+
+曾经有两个这样的 bug 同时存在，只在空 `build/` 下暴露：
+
+1. sibling 路径少上一级，找不到同级的 RT-Thread 检出
+2. 顶层用普通 `set()` 设 `RTTHREAD_ROOT`，而组件读的是
+   `CACHE{RTTHREAD_ROOT}`——两个变量在 CMake 里不是一回事
+
+两个都已修复，但**下次改动 CMake 后请仍然从空目录验证一次**。
+
 ## 5b. 确认上游树是干净的
 
 ```powershell

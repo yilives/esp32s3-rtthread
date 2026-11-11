@@ -905,6 +905,82 @@ malloc(largest+1) refused, as it should be
 
 ---
 
+## 20. 从零 configure 会失败（已修，两个 bug）
+
+**这一条最严重**：只在没有 build 缓存时暴露，所以本地开发一直没撞上，
+但任何第一次构建这个仓库的人都会。
+
+### Bug 1：sibling 路径少上一级
+
+`project/s3-rtt-test/CMakeLists.txt` 里找同级 RT-Thread 检出：
+
+```cmake
+get_filename_component(_s3_repo_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(RTTHREAD_ROOT "${_s3_repo_root}/../rt-thread")
+```
+
+`CMAKE_CURRENT_LIST_DIR` 是 `<repo>/project/s3-rtt-test`，上两级是
+`<repo>/project`，再拼 `../rt-thread` 得到 `<repo>/project/rt-thread` —— 不存在。
+
+注释说的是"找 repository 旁边的 `../rt-thread`"，代码算的是上两级。
+
+**症状**：
+
+```
+RTTHREAD_ROOT is not set and no RT-Thread checkout was found at
+'I:/RT_thread/../rt-thread'.
+```
+
+### Bug 2：顶层 `set()` 不写 CAMKE cache
+
+修好 Bug 1 后继续失败：
+
+```
+CMake Error at components/rtthread/CMakeLists.txt:48:
+  RTTHREAD_ROOT is not set.
+```
+
+而上一行刚打印了 `-- s3-rtt-test: RTTHREAD_ROOT=I:/RT_thread/rt-thread`。
+
+原因：组件读的是
+
+```cmake
+if(DEFINED CACHE{RTTHREAD_ROOT}) ... else() $ENV{RTTHREAD_ROOT}
+```
+
+而顶层用的是普通 `set()`，组件在另一个 scope 里看不到。必须
+`set(... CACHE PATH ... FORCE)`。
+
+### 为什么一直没发现
+
+因为 `build/` 一直在，cache 里早就有 `RTTHREAD_ROOT`。**只有删掉 build 目录
+才会暴露。** 我这几轮的所有构建都复用了旧 cache。
+
+### 修法
+
+1. 改成探测多个候选路径，取第一个含 `src/scheduler_mp.c` 的：
+
+```cmake
+set(_s3_rtt_candidates
+    "${CMAKE_CURRENT_LIST_DIR}/../../../rt-thread"   # 标准布局
+    "${CMAKE_CURRENT_LIST_DIR}/../../rt-thread"     # 本仓库布局
+    "${CMAKE_CURRENT_LIST_DIR}/../rt-thread")       # 扁平布局
+```
+
+2. 解析完写入 cache，并加注释说明为什么不能用普通 `set()`。
+
+### 验证
+
+```powershell
+Remove-Item build -Recurse -Force
+.\tools\build.ps1 -Project .\project\s3-rtt-test
+```
+
+从零到 `Project build complete` 成功，烧写后 `check-docs.ps1` 35/35 全绿。
+`WL_DEFAULT_TEMP_BUFF_SIZE=4096` 仍在 9 个 wear_levelling 编译单元里生效。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -929,3 +1005,4 @@ malloc(largest+1) refused, as it should be
 | 17 | `s3rt key pulse` 输出误导 | 低 | 已修：同时报新总数，并说明抖动 |
 | 18 | PSRAM 三个数字不一致 | 信息 | 不是 bug；已加 largest/largest+1 的实测验证 |
 | 19 | `s3fsbench` 两种模式互相干扰 | 信息 | 不是 bug；各自需要新卷，已写入文档 |
+| 20 | 从零 configure 失败 | **高** | 已修：sibling 路径 + RTTHREAD_ROOT 未写 cache |
