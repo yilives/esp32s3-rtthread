@@ -66,7 +66,29 @@ foreach ($line in Get-Content $expectFile) {
         continue
     }
     if (-not $current) { throw "pattern before any [section]: $t" }
-    [void]$sections[$current].Add($t)
+
+    # A line starting with "~" constrains a capture group of the pattern above
+    # it, rather than matching anything itself:
+    #
+    #   s3fsbench: create 32 small files -> (\d+) writes .*, (\d+) erases
+    #   ~ 1 == 152            exact
+    #   ~ 2 in 130..140       range, inclusive
+    #
+    # Several constraints may follow one pattern, so each entry carries a LIST.
+    # (The first version stored a single constraint by replacing the entry with
+    # a hashtable, and a second "~" line then pointed "pattern" at that
+    # hashtable - which surfaced as "unhashable type: dict" in the driver.)
+    #
+    # Without constraints, a pattern like "(\d+) KB/s" passes on 57 and on 242
+    # alike, so a ten-fold performance regression is invisible.
+    if ($t.StartsWith('~')) {
+        $last = $sections[$current].Count - 1
+        if ($last -lt 0) { throw "'~' constraint before any pattern in [$current]" }
+        $sections[$current][$last].constraints += $t.Substring(1).Trim()
+        continue
+    }
+
+    [void]$sections[$current].Add(@{ pattern = $t; constraints = @() })
 }
 
 # A section that needs credentials is skipped unless they were supplied; its
@@ -137,7 +159,13 @@ foreach ($k in $selected) { if (-not $reboots[$k]) { $ordered += $k } }
 foreach ($k in $selected) { if ($reboots[$k])     { $ordered += $k } }
 
 $spec = [ordered]@{}
-foreach ($k in $ordered) { $spec[$k] = @{ patterns = @($sections[$k]); reboot = [bool]$reboots[$k] } }
+foreach ($k in $ordered) {
+    $norm = @()
+    foreach ($item in $sections[$k]) {
+        $norm += @{ pattern = $item.pattern; constraints = @($item.constraints) }
+    }
+    $spec[$k] = @{ patterns = $norm; reboot = [bool]$reboots[$k] }
+}
 
 $payload = @{
     port        = $Port
@@ -250,12 +278,40 @@ for name, spec in CFG["sections"].items():
         print("=== %s ===\n%s" % (name, out))
 
     missing = []
-    for p in patterns:
+    for spec in patterns:
+        p = spec["pattern"]
+        cons = spec.get("constraints") or []
         try:
-            if not re.search(p, out):
-                missing.append(p)
+            m = re.search(p, out)
         except re.error as e:
             missing.append("%s   (BAD REGEX: %s)" % (p, e))
+            continue
+        if not m:
+            missing.append(p)
+            continue
+
+        # "N in LO..HI" or "N == VALUE". N is a capture group number; 0 is the
+        # whole match.
+        for con in cons:
+            cm = re.match(r"^(\d+)\s+(in\s+(-?\d+)\.\.(-?\d+)|==\s*(-?\d+))$", con)
+            if not cm:
+                missing.append("%s   (BAD CONSTRAINT: %s)" % (p, con))
+                continue
+            try:
+                gi = int(cm.group(1))
+                got = int(m.group(gi))
+            except (IndexError, ValueError):
+                missing.append("%s   (group %s is not an integer)" % (p, cm.group(1)))
+                continue
+
+            if cm.group(5) is not None:
+                want = int(cm.group(5))
+                if got != want:
+                    missing.append("%s   (group %d is %d, expected %d)" % (p, gi, got, want))
+            else:
+                lo, hi = int(cm.group(3)), int(cm.group(4))
+                if not (lo <= got <= hi):
+                    missing.append("%s   (group %d is %d, outside %d..%d)" % (p, gi, got, lo, hi))
 
     results.append((name, len(patterns), missing, out))
 

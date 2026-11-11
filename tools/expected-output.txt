@@ -30,15 +30,51 @@
 #
 # ORDER MATTERS. The checker runs sections top to bottom, in one boot.
 #
-# BLE must come before anything that initialises Wi-Fi. With Wi-Fi up, the BLE
-# controller cannot get the ~56 KB of contiguous internal DRAM it needs and
-# fails with BLE_INIT: Malloc failed (docs/KNOWN-ISSUES.md section 12). A
-# checker that ran s3wifiscan first would report two failures that are really
-# one documented ordering constraint.
+# Three rules, each of which has already produced a false failure:
+#
+#  1. The `s3fsbench small` bounds span two volume states on purpose. The write
+#     count is 152 on a freshly formatted volume and 190 on one that has been
+#     used, and both are correct - a long run cannot guarantee which one it is
+#     at that point. The bounds still catch a real regression: before the
+#     allocation-unit tuning this count was 1460.
+#
+#     Creating 32 small files is sensitive to how spread out the directory
+#     entries already are; writing one contiguous 256 KB file is not (79 writes /
+#     71 erases regardless). That is why the small-file bounds are wide and the
+#     bulk-write bounds are narrow.
+#
+#  2. Anything timed runs before any radio starts. With Wi-Fi associated the
+#     same s3fsbench write is 4567 ms / 56 KB/s instead of 1055 ms / 242 KB/s -
+#     both correct, four times apart. A range that has to cover both is so wide
+#     it catches nothing.
+#
+#  3. BLE comes before anything that initialises Wi-Fi. With Wi-Fi up the BLE
+#     controller cannot get the ~56 KB of contiguous internal DRAM it needs and
+#     fails with BLE_INIT: Malloc failed (docs/KNOWN-ISSUES.md section 12).
+#
+#  4. Reboot sections come last, and the checker enforces that itself.
+#
+# Without rules 1 and 2 the s3fsbench ranges failed the first time the full
+# sequence was run, reporting regressions that were really preconditions.
 #
 # Commands that depend on hardware not on this board (an I2C device, an SPI
 # loopback jumper) assert only their "nothing found" branch, which is what a
 # bare board prints.
+#
+# A line starting with "~" constrains a capture group of the pattern above it:
+#
+#   s3fsbench: create 32 small files -> (\d+) writes .*, (\d+) erases
+#   ~ 1 in 145..200
+#   ~ 2 in 136..136
+#
+# "N == VALUE" for values that are deterministic (write counts - they follow
+# from the FAT and wear-levelling algorithms), "N in LO..HI" for values that are
+# not (anything timed - SPI NOR erase time varies by 40% between runs on the
+# same board).
+#
+# Every bound below comes from repeated measurement on this board, recorded in
+# the section's own doc page. Do not widen one to make a test pass; find out why
+# the number moved.
 
 [s3rt]
 s3rt v\d+\.\d+ - ESP32-S3 / RT-Thread \d+\.\d+\.\d+
@@ -84,7 +120,8 @@ cpu1: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
 
 [s3heap]
 idf heap:
-  internal 8-bit :\s+\d+ free,\s+\d+ largest,\s+\d+ min ever
+  internal 8-bit :\s+(\d+) free,\s+\d+ largest,\s+\d+ min ever
+~ 1 in 80000..100000
   internal 32-bit:\s+\d+ free
   internal DMA   :\s+\d+ free
   IRAM 8-bit     :\s+\d+ free
@@ -147,19 +184,43 @@ s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
 [s3fs read]
 s3fs read: PASS, \d+ bytes intact after reboot
 
+[s3fs unmount]
+s3fs unmount
+
+[s3fs erase]
+s3fs: erasing \d+ bytes at 0x[0-9a-f]+
+s3fs: erased; next `s3fs` will format and mount
+
+[s3fs format]
+s3fs: formatted storage
+
+[s3fs after erase]
+s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
+
+[s3fsbench small]
+s3fsbench: create 32 small files -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
+~ 1 in 145..200
+~ 2 in 130..180
+s3fsbench: overwrite one file 8x -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
+~ 1 in 40..80
+~ 2 in 35..70
+s3fsbench: create 32 x 64 B in (\d+) ms
+~ 1 in 4000..12000
+s3fsbench: overwrite one file 8x in (\d+) ms
+~ 1 in 1500..5000
+s3fsbench: delete 32 files in (\d+) ms
+~ 1 in 2500..8000
+
 [s3fsbench write]
 s3fsbench: FAT on "storage", \d+-byte sectors, \d+-byte clusters
 s3fsbench: volume \d+ KB total, \d+ KB free
 s3fsbench: measure on a freshly formatted volume
-s3fsbench: bulk write 256 KB -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
-s3fsbench: write  256 KB in \d+ ms -> \d+ KB/s
-
-[s3fsbench small]
-s3fsbench: create 32 small files -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
-s3fsbench: overwrite one file 8x -> \d+ writes \(\d+ B\), \d+ erases \(\d+ B\)
-s3fsbench: create 32 x 64 B in \d+ ms
-s3fsbench: overwrite one file 8x in \d+ ms
-s3fsbench: delete 32 files in \d+ ms
+s3fsbench: bulk write 256 KB -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
+~ 1 in 60..100
+~ 2 in 55..90
+s3fsbench: write  256 KB in (\d+) ms -> (\d+) KB/s
+~ 1 in 700..2500
+~ 2 in 100..400
 
 [s3ble]
 s3ble: bringing up the BLE controller on the FreeRTOS shim
@@ -201,16 +262,6 @@ s3net: resolving example.com
   recv                   ok \(\d+ bytes\)
 s3net: PASS, \d+ byte\(s\) received over TCP
 
-[s3fs unmount]
-s3fs unmount
-
-[s3fs erase]
-s3fs: erasing \d+ bytes at 0x[0-9a-f]+
-s3fs: erased; next `s3fs` will format and mount
-
-[s3fs format]
-s3fs: formatted storage
-
 [s3ulpw]
 s3ulpw: worker started; `list thread` should show it in suspend between kicks
 
@@ -219,7 +270,8 @@ s3ulpw: worker stopped after \d+ kicks, last result 0x[0-9a-f]+
 
 [s3ulp]
 s3ulp: submitting CMD_COUNT, blocking
-s3ulp: PASS, ULP completed in \d+ us, result=0x[0-9a-f]+
+s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
+~ 1 in 100..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 
 [s3ulp stop]
