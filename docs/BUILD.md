@@ -270,6 +270,32 @@ msh >
 
 ---
 
+## 5b. 确认上游树是干净的
+
+```powershell
+.\tools\verify-tree.ps1
+```
+
+**期望**：
+
+```
+  expected (26) - this repository ships or patches these:
+    ...
+  No foreign changes.
+```
+
+出现 `FOREIGN` 就是有问题：说明上游树里有本仓库不知道的改动，而它们会让你的
+构建和本仓库描述的镜像不一致。
+
+**这条建议来自一次真实的误判。** 本地 `components/lwip/lwip/src/api/tcpip.c`、
+`components/lwip/port/freertos/sys_arch.c`、
+`components/esp_netif/lwip/esp_netif_lwip.c` 里各有未提交的调试代码，
+其中一处用了 lwip 里不可见的 `rt_uint32_t`，直接编不过；还有一处改变了内存
+布局，让 `s3ble` 表现出两种不同的失败形态。清掉之后同一测试 6/6、Guru 0。
+
+`-Fix` 会逐个询问是否回退。未跟踪的文件不会被自动处理——`git clean` 会删文件，
+不该替你做这个决定。
+
 ## 6. QEMU（可选）
 
 > `-NoPsram` 曾经**完全没生效**：注释说建到 `build-qemu/`，实际建到 `build/`，
