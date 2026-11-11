@@ -527,6 +527,43 @@ static int cmd_s3smp(int argc, char **argv)
 
     return 0;
 }
+/*
+ * Report the IDF heap pools, which is not the same thing as `free`.
+ *
+ * `free` prints the RT-Thread kernel heap. Wi-Fi and BLE do not allocate from
+ * there - they call heap_caps_malloc(), which takes from the IDF's own regions
+ * (internal DRAM, and PSRAM when a capability asks for it). When `s3ble` fails
+ * with "Malloc failed" or the BLE controller asserts inside intc.c, the number
+ * that explains it is in these pools, and until now there was no way to see it.
+ */
+static int cmd_s3heap(int argc, char **argv)
+{
+    RT_UNUSED(argc);
+    RT_UNUSED(argv);
+
+    rt_kprintf("idf heap:\n");
+    rt_kprintf("  internal 8-bit : %8u free, %8u largest, %8u min ever\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    rt_kprintf("  internal 32-bit: %8u free\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT));
+    rt_kprintf("  internal DMA   : %8u free\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+    rt_kprintf("  IRAM 8-bit     : %8u free\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_IRAM_8BIT));
+#if CONFIG_SPIRAM
+    rt_kprintf("  PSRAM 8-bit    : %8u free, %8u largest\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#endif
+    rt_kprintf("  total free     : %8u\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+
+    return 0;
+}
+MSH_CMD_EXPORT_ALIAS(cmd_s3heap, s3heap, IDF heap pools (not the RT-Thread heap));
+
 MSH_CMD_EXPORT_ALIAS(cmd_s3smp, s3smp, dual core state);
 
 MSH_CMD_EXPORT_ALIAS(cmd_s3rt, s3rt, ESP32-S3 RT-Thread bring-up report);

@@ -183,6 +183,7 @@ xtensa-esp32s3-elf-gdb .\project\s3-rtt-test\build-qemu\s3_rtt_test.elf
 | LEDC PWM | `rt_pwm_device` | `s3rt pwm` |
 | SYSTIMER | tick 源 | `s3rt tick` |
 | PSRAM 8 MB octal | `heap_caps_malloc` | `s3rt psram` |
+| IDF 堆分区 | `heap_caps_*` | `s3heap`（与 `free` 不同：后者是 RT-Thread 堆）|
 | **TIMG 看门狗** | 直连 | `s3wdt` / `s3wdt hang` |
 | **ULP-RISC-V 协处理器** | 直连 + 中断 | `s3ulp` / `s3ulpw` |
 

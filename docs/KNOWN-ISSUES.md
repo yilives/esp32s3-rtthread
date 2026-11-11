@@ -499,11 +499,51 @@ esp_wifi_init  FAILED 0x101 (ESP_ERR_NO_MEM)
 拆 BLE 对已经失败的分配没有帮助。移到 `esp_wifi_init()` **之前**后，这条路
 从 0/5 变成 5/5。
 
-### Wi-Fi → BLE 为什么还不行（未解决）
+### Wi-Fi → BLE 为什么还不行（未解决，但量化了）
 
-`param 00000008` 是 `ETS_RWBT_NMI_SOURCE` —— BLE controller 初始化时要注册
-RWBT 的 NMI 中断，而此时 Wi-Fi 已经占用了中断控制器里的资源。断言在预编译的
-`libbtdm_app.a` 里（`intc.c:222`），改不动。
+新增的 `s3heap` 命令（IDF 堆，不是 `free` 那个 RT-Thread 堆）给出了答案：
+
+```
+                     内部 DRAM 空闲    最大连续块
+开机              :      93512           53248
+Wi-Fi 起来后      :      59364           31744
+s3ble 尝试之后    :       2568            2304
+```
+
+BLE controller 一次性要 **> 56 KB 的连续内部 DRAM**。Wi-Fi 占掉后只剩
+31 KB 的最大块，不够。
+
+所以失败会以两种形式出现，取决于当时碎片的形状：
+
+| 现象 | 触发条件 |
+| --- | --- |
+| `BLE_INIT: Malloc failed` / `rc=519` | 分配先失败，占多数 |
+| `BLE assert intc.c 222, param 00000008` | 内存勉强够，但注册 `ETS_RWBT_NMI_SOURCE` 时失败 |
+
+**这是内存问题，不是中断分配器的问题。** 我一开始以为是后者（`board/interrupt.c`
+拒绝高于 `XCHAL_EXCM_LEVEL` 的线），但那个拒绝会打印
+`intr: line N needs an assembly handler` —— 实测从未出现。
+
+### 试过但无效的（继续记录，避免重复）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL`（PSRAM） | 4/6，仍会失败 |
+| WiFi 静态 RX 10→6、动态 32→16 | 5/6，重复测 4/8 |
+| WiFi 静态 RX 6→4、动态 16→8 | 2/6，更差 |
+| NimBLE 连接数 3→1、MTU 256→128、事件队列 30→12 | **0/5，更差** —— 这些参数不控制 controller 的 buffer |
+
+### 下一步
+
+BLE controller 的 buffer 不是在 NimBLE 的 Kconfig 里配的，而是在预编译的
+`libbtdm_app.a` 里按 `CONFIG_BT_CTRL_BLE_MAX_ACT` 等参数静态分配的。真正能减的是：
+
+1. `CONFIG_BT_CTRL_BLE_MAX_ACT` 6 → 2（同时降低 `_EFF`）
+2. `CONFIG_BT_CTRL_BLE_MAX_ACT_EFF` —— 实际生效的那个
+3. 或者确认 Wi-Fi 能否少占：`CONFIG_ESP_WIFI_RX_BA_WIN`、`ESP_WIFI_STATIC_RX_BUFFER_NUM`
+   里哪个是 31 KB 碎片的主要来源
+
+都没验证过，不做承诺。
 
 ### 试过但无效的方案
 
