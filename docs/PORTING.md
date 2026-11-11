@@ -305,7 +305,7 @@ Guru Meditation Error: Core 1 panic'ed (LoadProhibited)
 
 ## 四、FreeRTOS API 兼容层
 
-`esp-idf/components/rtthread/port/freertos/`，约 3751 行，9 个文件。
+`esp-idf/components/rtthread/port/freertos/`，4204 行，9 个文件。
 
 ### 4.1 核心思想
 
@@ -319,6 +319,54 @@ IDF 的组件调用 `xQueueCreate` / `xSemaphoreTake` / `xTaskCreate` 等等。
 | `TaskHandle_t` | `rt_thread_t` |
 | `xTaskNotifyGive` | `ft_notify_*`（用 `rt_sem_t` + 计数器） |
 | `portENTER_CRITICAL` | `rt_hw_local_irq_disable`（**不是** `rt_hw_interrupt_disable`） |
+
+**实际实现了 64 个 `x*`/`v*` 函数**，全部静态定义在 `freertos_api.c`
+（933 行）里，用脚本从 `port/freertos/*.c` 提取：
+
+```
+freertos_api.c   933 行   64 个 FreeRTOS 函数   <- 薄包装层
+ft_ipc.c        1231 行    0 个               <- 队列/信号量的真正实现
+ft_task.c        988 行    0 个               <- 线程映射
+ft_notify.c      414 行    0 个               <- 通知
+ft_event.c       177 行    0 个               <- 事件组
+ft_qset.c        273 行    0 个               <- queue set
+ft_query.c       239 行    0 个               <- 状态查询
+ft_probe.c       129 行    0 个               <- 诊断
+```
+
+**这一层薄包装是刻意的**：`freertos_api.c` 只做参数转换和类型适配，所有需要
+状态的东西（`ft_ipc` 的生命周期、等待队列、静态控制块布局）都在 `ft_*.c` 里。
+这样 FreeRTOS 的 API 形状变化只影响一个文件，而 RT-Thread 侧的语义只在一个
+地方实现。
+
+用脚本核对：
+
+```powershell
+.\tools\list-shim-api.ps1          # 按类别列出，验证上表
+.\tools\list-shim-api.ps1 -All     # 全部 64 个
+.\tools\list-shim-api.ps1 -Missing # 文档提到但没实现的
+```
+
+下列分类来自脚本输出：
+
+| 类别 | 数量 | 代表 |
+| --- | --- | --- |
+| Queue / Semaphore | 27 | `xQueueGenericCreate`, `xQueueSemaphoreTake`, `xQueueGiveFromISR` |
+| Task | 22 | `xTaskCreatePinnedToCore`, `vTaskDelay`, `xTaskGetCoreID` |
+| Notify | 6 | `xTaskGenericNotify`, `vTaskGenericNotifyGiveFromISR` |
+| Event group | 6 | `xEventGroupCreate`, `xEventGroupWaitBits` |
+| 调度器 / 超时 | 3 | `vTaskSuspendAll`, `xTaskCheckForTimeOut` |
+
+核对方法：
+
+```powershell
+# 从源码里提取 shim 实际定义的 FreeRTOS 风格函数
+Get-ChildItem components/rtthread/port/freertos/*.c |
+  Select-String -Pattern '^[A-Za-z_][\w \*]*\b([xv][A-Z]\w+)\s*\('
+```
+
+这不是完整清单——`xQueueCreate` 之类的宏在头文件里，落到
+`xQueueGenericCreate`。但**上表每一类都有实际实现**，不是设想中的映射。
 
 ### 4.2 静态创建
 
@@ -336,12 +384,15 @@ _Static_assert(sizeof(StaticQueue_t) >= sizeof(struct ft_ipc_stub), "...");
 `ft_core.h` 里：
 
 ```c
-#if defined(__XTENSA__)
-#  define FT_IRAM   __attribute__((section(".iram1")))
-#else
-#  define FT_IRAM
-#endif
+#define FT_IRAM             __attribute__((section(".iram1")))
 ```
+
+**无条件定义，不是只在 Xtensa 上。** 早先的版本按 `__XTENSA__` 条件编译，
+理由是只有 Xtensa 有 flash cache。这个理由对 ESP32-C5（RISC-V）同样成立——
+它也有同样的 cache，flash 里的被调用者一样会触发 cache 访问错误。
+
+在 RT-Thread 里 `section(".iram1")` 对两个架构都有效，所以条件编译只是多余的
+复杂度，而且会在 RISC-V 上留下一个真实缺陷。
 
 **为什么需要**：BLE controller 的 ISR 会调
 `semphr_give_from_isr_wrapper → xQueueGiveFromISR → ft_ipc_send_isr`。

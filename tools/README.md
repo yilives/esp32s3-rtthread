@@ -21,6 +21,7 @@
 | `verify-tree.ps1` | **检查上游树是否只含本仓库的改动**（见下）|
 | `check-docs.ps1` | **在板上跑文档里的命令，比对实际输出**（见下）|
 | `verify-doc-commands.ps1` | **核对文档提到的命令是否真的导出**（见下）|
+| `list-shim-api.ps1` | **列出 FreeRTOS 兼容层实际实现的 API**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -130,6 +131,34 @@ Wi-Fi 之前——Wi-Fi 起来后 BLE 拿不到那 56 KB 连续内部 DRAM
 
 命令名是可以检查的那部分：如果文档让读者敲 `s3foo` 而没有这个命令，那是
 脚本能抓到的事实错误。
+
+## `list-shim-api.ps1`：兼容层到底实现了什么
+
+不需要板子。从 `components/rtthread/port/freertos/*.c` 提取所有 FreeRTOS 风格
+（`x*` / `v*`）的函数定义。
+
+```powershell
+.\tools\list-shim-api.ps1           # 按类别汇总
+.\tools\list-shim-api.ps1 -All      # 全部 64 个，附文件名
+.\tools\list-shim-api.ps1 -Missing  # 文档提到但没实现的
+```
+
+**实测架构**（脚本输出）：
+
+```
+freertos_api.c   933 行   64 个 FreeRTOS 函数   <- 薄的参数/类型适配层
+ft_ipc.c        1231 行    0 个               <- 队列/信号量的真正实现
+ft_task.c        988 行    0 个               <- 线程映射
+```
+
+`-Missing` 会把 `PORTING.md` 里提到的每个 `x*`/`v*` 名字查一遍，判定它是否
+`#define` 成宏、或被 IDF 自己的 freertos 组件实现。`xTaskCreate` 是
+`xTaskCreatePinnedToCore` 的宏，`xPortGetCoreID` 在 IDF 的 port 里——都不算缺失。
+
+### 为什么需要它
+
+`PORTING.md` 里 `FT_IRAM` 的代码块还写着 `#if defined(__XTENSA__)`，而实际
+早就改成无条件了；文件行数写的是 3751，实际 4204。散文不会编译失败。
 
 ## 参数
 
