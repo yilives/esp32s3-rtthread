@@ -466,7 +466,8 @@ static int cmd_s3rt(int argc, char **argv)
     /* `list thread`, not `list_thread`: RT-Thread 5.x exposes one `list`
      * command with an object-type argument, and the old underscore spellings
      * no longer exist (measured: "list_thread: command not found"). */
-    rt_kprintf("  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free\n");
+    rt_kprintf("  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, s3rt key\n");
+    rt_kprintf("              list thread, free, s3heap\n");
 
     return 0;
 }

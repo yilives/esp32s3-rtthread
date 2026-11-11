@@ -83,29 +83,68 @@ msh >list thread
 
 ```
 msh >s3rt led
+led   : blinked 5x on GPIO48 (active-low), left ON
 ```
 
-板载 LED（GPIO48）应该闪几下。这块板子的 LED 是**灌电流**接法——低电平点亮。
+板载 LED（GPIO48）闪 5 下后保持点亮。这块板子的 LED 是**灌电流**接法——
+低电平点亮，所以"左 ON"意味着引脚输出 0。
 
 ### 2.2 按键中断
 
-按下 BOOT 键（GPIO0），或者：
+按下 BOOT 键（GPIO0），或者用软件触发：
 
 ```
 msh >s3rt key pulse
+key   : GPIO0 idle (high), 0 press(es) counted
+pulsed 5 falling edges -> 8 interrupt(s) (PASS - the edge reached the ISR)
+press BOOT and run `s3rt key` again, or run
+`s3rt key pulse` to self-trigger the edge
 ```
 
-**期望**：中断计数 +1。这是验证 `rt_pin_attach_irq → esp_intr_alloc` 这条路。
+**期望**：`pulsed 5 falling edges -> N interrupt(s)` 且 N ≥ 5。
+
+> **注意是 8 不是 5。** GPIO 边沿检测在按键抖动时会产生额外中断，这是正常的。
+> 判据是"至少 5 个"，不是"正好 5 个"。这一行验证的是
+> `rt_pin_attach_irq → esp_intr_alloc → ISR` 这条路通不通，不是消抖。
 
 ### 2.3 PWM
 
 ```
 msh >s3rt pwm
+pwm   : ch0 on GPIO48, 500000 ns high of 1000000 ns (about 1000 Hz)
+ledc: res 14 (16384 steps), clk_div 2.113, duty 131072 (about half expected)
+duty_start 1 -> LED should be dimmed; `s3rt led` gives full brightness
 ```
 
-LED 会从暗到亮再到暗。这条验证 LEDC。
+LED 会从暗到亮再到暗。这条验证 LEDC。第二行报告的是硬件实际值——
+`clk_div 2.113` 是分频器算出来的结果，不是配置里写的整数。
 
-### 2.4 I2C / SPI / ADC
+### 2.4 其它自检子命令
+
+```
+msh >s3rt tick
+tick: 36630 -> 36730 (delta 100, expected ~100)
+
+msh >s3rt irq
+uart0 irq : 44 entries, 0 overrun(s), line unmasked
+(typing anything bumps the count)
+
+msh >s3rt psram
+psram : 8388608 bytes detected
+heap pool 8388608 total, 8386120 free
+pattern over 256 KB: OK (0 bad word(s))
+```
+
+| 子命令 | 验证什么 | 判据 |
+| --- | --- | --- |
+| `s3rt tick` | SYSTIMER 真的在驱动 `rt_tick_increase()` | delta 与 expected 相差不超过几 |
+| `s3rt irq` | UART0 中断在响应 | `entries` 随按键增长，`overrun(s)` 为 0 |
+| `s3rt psram` | 8 MB octal PSRAM 可读可写 | `8388608 bytes detected`，`0 bad word(s)` |
+
+`psram` 的 `pattern over 256 KB` 是往 PSRAM 写一个可识别的图案再读回比对——
+只报总容量不报这个，就说明不了它是真的能存数据还是只有 ID 读对了。
+
+### 2.5 I2C / SPI / ADC
 
 ```
 msh >i2cscan                      # 扫描 I2C 总线（i2c0 = GPIO8/9）

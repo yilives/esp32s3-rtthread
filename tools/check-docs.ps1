@@ -189,7 +189,8 @@ if "msh >" not in text:
 # How long to wait for each command's output. A command that takes longer than
 # this is measured wrong, not broken; the patterns still have to match.
 WAIT = {
-    "s3fs": 70, "s3fsbench write": 90, "s3wifiscan": 40, "s3ble": 50,
+    "s3fs": 70, "s3fsbench write": 90, "s3fsbench small": 120,
+    "s3wifiscan": 40, "s3ble": 50,
     "s3wifi <ssid> <pass>": 80, "s3net example.com": 35,
     "s3ulp": 30, "list thread": 10, "free": 8,
 }

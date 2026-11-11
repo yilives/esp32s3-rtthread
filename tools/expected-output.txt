@@ -46,7 +46,30 @@ s3rt v\d+\.\d+ - ESP32-S3 / RT-Thread \d+\.\d+\.\d+
   current   : \S+ at priority \d+
   counters  : a=\d+ b=\d+
 heap kernel: \d+ total, \d+ used, \d+ peak
-  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free
+  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, s3rt key
+              list thread, free, s3heap
+
+[s3rt tick]
+tick: \d+ -> \d+ \(delta \d+, expected ~\d+\)
+
+[s3rt irq]
+uart0 irq : \d+ entries, \d+ overrun\(s\), line unmasked
+\(typing anything bumps the count\)
+
+[s3rt psram]
+psram : \d+ bytes detected
+heap pool \d+ total, \d+ free
+pattern over 256 KB: OK \(\d+ bad word\(s\)\)
+
+[s3rt led]
+led   : blinked 5x on GPIO48 \(active-low\), left ON
+
+[s3rt pwm]
+pwm   : ch0 on GPIO48, \d+ ns high of \d+ ns \(about \d+ Hz\)
+duty_start 1 -> LED should be dimmed; `s3rt led` gives full brightness
+
+[s3rt key]
+key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 
 [s3smp]
 s3smp: CPUS_NR=\d+, this core=\d+
@@ -160,6 +183,12 @@ s3fs: erased; next `s3fs` will format and mount
 
 [s3fs format]
 s3fs: formatted storage
+
+[s3ulpw]
+s3ulpw: worker started; `list thread` should show it in suspend between kicks
+
+[s3ulpw stop]
+s3ulpw: worker stopped after \d+ kicks, last result 0x[0-9a-f]+
 
 [s3ulp]
 s3ulp: submitting CMD_COUNT, blocking

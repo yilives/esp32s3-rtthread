@@ -71,10 +71,14 @@ RTC_NOINIT 计数器和诊断打印，引用了 `c5tcp` 测试。它们改的内
 **期望**：
 
 ```
-  PASS  s3rt                 6 pattern(s)
+  PASS  s3rt                 7 pattern(s)
   ...
-RESULT: PASS - all 19 section(s) matched
+RESULT: PASS - all 31 section(s) matched
 ```
+
+覆盖范围包括 `s3rt` 的七个子命令（`tick`/`irq`/`psram`/`led`/`pwm`/`key`）、
+`s3fs` 的四种状态转换、`s3fsbench` 的两种模式、`s3ulp` 与 `s3ulpw`。
+`led` 和 `pwm` 会点亮 LED，这是正常的副作用。
 
 清单在 `expected-output.txt`，每节是「命令名 + 若干正则」。规则写在文件头：
 **只匹配该命令自己打印的行**，数值用形状不用具体数字。
