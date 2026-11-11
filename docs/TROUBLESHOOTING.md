@@ -148,6 +148,9 @@ available: 78832     ← 这个数不能太小
 | BLE 起来 | ~34000 | ~97000 |
 | Wi-Fi 也起来 | 52144 | 78832 |
 
+`s3heap` 报 `largest` 而 `free` 不报，是因为**能分配多大由 `largest` 决定**。
+PSRAM 就是现成的例子：8 MB 可用，最大连续块只有 8064 KB，一次分配 8 MB 会失败。
+
 **最坏情况是双无线都在跑**，`available` 约 78 KB。低于 **10 KB** 就该担心了——
 lwIP 给每个线程建 per-thread 信号量，堆耗尽时 `thread_sem_init` 失败，
 表现为 `tcpip_send_msg_wait_sem (Invalid mbox)` 断言。

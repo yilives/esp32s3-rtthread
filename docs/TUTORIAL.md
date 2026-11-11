@@ -135,15 +135,37 @@ uart0 irq : 44 entries, 0 overrun(s), line unmasked
 
 msh >s3rt psram
 psram : 8388608 bytes detected
-heap pool 8388608 total, 8386120 free
+heap pool 8388608 total, 8386120 free, 8257536 largest
+malloc(largest=8257536) ok (free was 8386120, 128584 more than that)
+malloc(largest+1) refused, as it should be
 pattern over 256 KB: OK (0 bad word(s))
 ```
+
+**三个数字不一样，这是正常的，不是泄漏：**
+
+| 数字 | 含义 |
+| --- | --- |
+| `8388608` detected | 芯片容量，8 MB |
+| `8388608` total | 注册进堆的总量，等于芯片容量 |
+| `8386120` free | 空闲，比 total 少 **2488 字节** |
+| `8257536` largest | **最大连续块，比 total 少 128 KB** |
+
+2488 字节是 region 注册时被 TLFS 拿去做控制结构的。128 KB 是另一个原因：
+PSRAM 按 **64 KB 的 MMU 页**映射，堆因此分成多个 region，每个 region 有自己
+的 TLSF 控制结构，最大的那个 region 装不下全部 8 MB。
+
+所以要判断"还能不能分配一块 N 字节"时，**看 `largest`，不要看 `free`**。
+8 MB 空闲的堆仍然无法一次分配 8 MB。
+
+这两行不是说明文字，是**验证**：命令真的去申请 `largest` 字节（成功）和
+`largest + 1` 字节（被拒）。没有这两行，`largest` 就只是个数字，读者只能相信
+它对分配有约束。
 
 | 子命令 | 验证什么 | 判据 |
 | --- | --- | --- |
 | `s3rt tick` | SYSTIMER 真的在驱动 `rt_tick_increase()` | delta 与 expected 相差不超过几 |
 | `s3rt irq` | UART0 中断在响应 | `entries` 随按键增长，`overrun(s)` 为 0 |
-| `s3rt psram` | 8 MB octal PSRAM 可读可写 | `8388608 bytes detected`，`0 bad word(s)` |
+| `s3rt psram` | 8 MB octal PSRAM 可读可写 | `8388608 bytes detected`，`0 bad word(s)`；看 `largest` 而非 `free` 判断能分配多大 |
 
 `psram` 的 `pattern over 256 KB` 是往 PSRAM 写一个可识别的图案再读回比对——
 只报总容量不报这个，就说明不了它是真的能存数据还是只有 ID 读对了。

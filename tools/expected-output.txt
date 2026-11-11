@@ -58,7 +58,9 @@ uart0 irq : \d+ entries, \d+ overrun\(s\), line unmasked
 
 [s3rt psram]
 psram : \d+ bytes detected
-heap pool \d+ total, \d+ free
+heap pool \d+ total, \d+ free, \d+ largest
+malloc\(largest=\d+\) ok \(free was \d+, \d+ more than that\)
+malloc\(largest\+1\) refused, as it should be
 pattern over 256 KB: OK \(\d+ bad word\(s\)\)
 
 [s3rt led]

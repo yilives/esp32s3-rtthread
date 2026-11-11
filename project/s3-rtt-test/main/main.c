@@ -202,9 +202,48 @@ static int cmd_s3rt(int argc, char **argv)
         }
 
         rt_kprintf("psram : %u bytes detected\n", (unsigned)esp_psram_get_size());
-        rt_kprintf("        heap pool %u total, %u free\n",
+        rt_kprintf("        heap pool %u total, %u free, %u largest\n",
                    (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
-                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+
+        /*
+         * Try to allocate exactly the largest free block, then one byte more.
+         *
+         * This is the assertion behind "look at largest, not free": on this
+         * board free is 8386120 but largest is 8257536, and the second number
+         * is the one that decides whether an allocation can succeed. Without
+         * this check the report would be showing a number whose meaning is
+         * asserted rather than demonstrated.
+         */
+        {
+            rt_size_t big_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            rt_size_t big_max  = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+            void *p;
+
+            if ((p = heap_caps_malloc(big_max, MALLOC_CAP_SPIRAM)) != RT_NULL)
+            {
+                heap_caps_free(p);
+                rt_kprintf("        malloc(largest=%u) ok "
+                           "(free was %u, %u more than that)\n",
+                           (unsigned)big_max, (unsigned)big_free,
+                           (unsigned)(big_free - big_max));
+            }
+            else
+            {
+                rt_kprintf("        malloc(largest=%u) FAILED\n", (unsigned)big_max);
+            }
+
+            if ((p = heap_caps_malloc(big_max + 1, MALLOC_CAP_SPIRAM)) == RT_NULL)
+            {
+                rt_kprintf("        malloc(largest+1) refused, as it should be\n");
+            }
+            else
+            {
+                heap_caps_free(p);
+                rt_kprintf("        malloc(largest+1) SUCCEEDED - largest is wrong\n");
+            }
+        }
 
         /* 256 KB is enough to catch a broken address line without taking the
          * whole chip out of the heap. */

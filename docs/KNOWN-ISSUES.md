@@ -819,6 +819,47 @@ key   : GPIO0 idle (high), 0 press(es) counted
 
 ---
 
+## 18. PSRAM 的三个数字不一样，但不是泄漏（已加验证）
+
+### 现象
+
+```
+psram : 8388608 bytes detected
+heap pool 8388608 total, 8386120 free, 8257536 largest
+```
+
+三个数都不同：total 是 8192 KB，free 少 2488 字节，largest 少了整整 128 KB。
+
+### 都不是 bug
+
+| 差值 | 原因 |
+| --- | --- |
+| free 比 total 少 **2488 字节** | region 注册时 TLSF 拿走做控制结构 |
+| largest 比 total 少 **128 KB** | PSRAM 按 **64 KB MMU 页**映射，堆分成多个 region，每个有自己的 TLSF 控制结构，最大那个装不下全部 8 MB |
+| BLE 之后 free 不变 | 控制器不从 PSRAM 分配（`BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL`）|
+
+实测：`CONFIG_MMU_PAGE_SIZE=64KB`，128 KB 正好两页。
+
+### 但"largest 限制单次分配"这个说法需要验证
+
+文档原本只是说"看 largest 别看 free"。这是个断言，不是证据。现在
+`s3rt psram` 真的去申请：
+
+```
+malloc(largest=8257536) ok (free was 8386120, 128584 more than that)
+malloc(largest+1) refused, as it should be
+```
+
+申请 `largest` 成功、申请 `largest + 1` 被拒——这才证明那个数字对分配确实
+有约束力。三次测量 largest 稳定在 8257536。
+
+### 实践含义
+
+**一次分配 8 MB 会失败**，尽管堆里还有 8 MB 空闲。需要大块连续内存时
+（比如整个 framebuffer），要么分块申请，要么把 PSRAM 的映射配置改成单段。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -841,3 +882,4 @@ key   : GPIO0 idle (high), 0 press(es) counted
 | 15 | `s3fs erase` 后无法挂载 | 高 | 已修：erase 成功后复位 `s_fs_mounted_once`；format 也停 Wi-Fi |
 | 16 | 文档性能数字缺前提 | 中 | 已修：注明卷状态、样本量、确定性 vs 波动 |
 | 17 | `s3rt key pulse` 输出误导 | 低 | 已修：同时报新总数，并说明抖动 |
+| 18 | PSRAM 三个数字不一致 | 信息 | 不是 bug；已加 largest/largest+1 的实测验证 |
