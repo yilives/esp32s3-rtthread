@@ -24,6 +24,7 @@
 | `list-shim-api.ps1` | **列出 FreeRTOS 兼容层实际实现的 API**（见下）|
 | `find-duplication.ps1` | **找出写了两遍的逻辑**（见下）|
 | `soak-docs.ps1` | **单次启动内重复跑工作负载，看有无漂移**（见下）|
+| `verify-doc-links.ps1` | **检查文档交叉引用是否还有效**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -246,6 +247,63 @@ RESULT: PASS - 10 iteration(s), no fault markers
 `irq` 每轮 +282 是键盘输入本身产生的中断，稳定即可。
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
+
+## `verify-doc-links.ps1`：断链检查
+
+```powershell
+.\tools\verify-doc-links.ps1
+```
+
+**期望**：
+
+```
+  10 markdown file(s) under I:\RT_thread\esp32s3-rtthread
+
+  KNOWN-ISSUES.md has 26 numbered entries, highest is 26
+
+  Every cross-reference resolves.
+```
+
+检查三类引用：
+
+| 类型 | 形式 | 判据 |
+| --- | --- | --- |
+| 文件链接 | `[文本](other.md)` | 目标文件必须存在 |
+| 条目引用 | `第 N 条` | `KNOWN-ISSUES.md` 必须有第 N 条 |
+| 章节引用 | `第 N 节` / `section N` | 被点名的那份文档必须有第 N 节 |
+
+后两类对照**目标文档的实际标题**，而不是硬编码范围——这样目标重新编号后检查仍然准确。
+
+### 为什么需要它
+
+`docs/` 里现在有 26 条 `KNOWN-ISSUES`、九份文档、几十个交叉引用。每一轮都在新增、
+重命名、重编号。**链接是第一个静默失效的东西**，因为除了点它的人，没有任何东西会读
+一个 Markdown 链接。
+
+### 一个 PowerShell 5.1 的坑
+
+这个脚本的第一版**编译不过**：
+
+```
+At verify-doc-links.ps1:119 char:31
+Missing ')' in method call.
+```
+
+原因不是语法写错，而是**脚本里有中文字符串字面量而文件没有 BOM**。Windows
+PowerShell 5.1 会把无 BOM 的文件当 ANSI 读，UTF-8 的中文字节被拆成乱码，其中某个
+字节恰好终止了字符串。
+
+仓库禁止 BOM（它曾经破坏 `.gitattributes`），所以修法不是加 BOM，而是**脚本本身
+保持纯 ASCII**：需要的中文字符用码点拼出来。
+
+```powershell
+$DI   = [char]0x7B2C   # 第
+$TIAO = [char]0x6761   # 条
+$JIE  = [char]0x8282   # 节
+$EntryPattern = '{0}\s*(\d+)\s*{1}' -f $DI, $TIAO
+```
+
+其他脚本没有中文字面量，所以一直没撞上。这是第一个需要的，也是第一个撞上的。
 
 ## 参数
 
