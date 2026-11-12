@@ -91,8 +91,8 @@ s3rt v\d+\.\d+ - ESP32-S3 / RT-Thread \d+\.\d+\.\d+
   current   : \S+ at priority \d+
   counters  : a=\d+ b=\d+
 heap kernel: \d+ total, \d+ used, \d+ peak
-  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, s3rt key
-              list thread, free, s3heap
+  commands  : s3rt tick, s3rt irq, s3rt irqlat, s3rt psram, s3rt led,
+              s3rt pwm, s3rt key, list thread, free, s3heap
 
 [s3rt tick]
 tick: \d+ -> \d+ \(delta \d+, expected ~\d+\)
@@ -127,6 +127,22 @@ key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 [s3rt key pulse]
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 pulsed 5 falling edges -> \d+ new interrupt\(s\), \d+ total \(PASS - the edge reached the ISR\)
+
+# Interrupt latency from a GPIO edge to the handler, measured on the chip with
+# the cycle counter. Upper bound: the pin write's own tail is included.
+#
+# The bound comes from the LL write, which is one register store. Measured with
+# rt_pin_write() going through the RT-Thread and IDF GPIO layers instead:
+# 531..546 cycles, i.e. about 100 cycles more. That difference is call-chain
+# overhead in the measurement, not in the interrupt path, which is why the
+# tighter number is the honest one.
+[s3rt irqlat]
+irqlat: (\d+)/(\d+) edges, (\d+)\.\.(\d+) cycles = (\d+)\.\.(\d+) us \(mean \d+ us\) at (\d+) MHz
+~ 1 == 10
+~ 2 == 10
+~ 3 in 300..900
+~ 4 in 300..900
+~ 7 == 240
 
 [s3smp]
 s3smp: CPUS_NR=\d+, this core=\d+

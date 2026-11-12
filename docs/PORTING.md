@@ -411,6 +411,25 @@ PC 0x4200d1d2  ft_ipc_resolve        (flash)  ← 同样
 
 ---
 
+## 四点五、中断延迟
+
+`s3rt irqlat` 用周期计数器测量从 GPIO 边沿到进入处理函数的时间。十次取
+最小/最大，因为控制环关心的是尾巴而不是平均。
+
+```
+irqlat: 10/10 edges, 434..480 cycles = 1.81..2.00 us (mean 1.81 us) at 240 MHz
+```
+
+**这是上界。** 测量在 ISR 读到计数器时结束，所以引脚写入自身剩下的工作也被
+算进去了。用 `rt_pin_write()` 时是 531..546 cycles；换成 `gpio_ll_set_level()`
+（一次寄存器写）后降到 434..480。差的约 100 cycles 是调用链开销，不在中断
+路径上——这也是为什么这里用更紧的那个数字。
+
+434 cycles @ 240 MHz = 1.81 µs。Xtensa 的中断进入本身约 30–50 cycles，其余
+是 GPIO 矩阵、中断控制器和 RT-Thread 的 `_rtt_int_enter`。
+
+无线的 ISR 会让这个数字变差，但那不影响正确性——只影响最坏情况下的控制精度。
+
 ## 五、IDF 侧的 16 个改动
 
 `patches/0001-idf-core-smp-hooks.patch`。
