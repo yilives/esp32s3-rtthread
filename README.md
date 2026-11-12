@@ -220,6 +220,7 @@ xtensa-esp32s3-elf-gdb .\project\s3-rtt-test\build-qemu\s3_rtt_test.elf
 | BLE 控制器 + NimBLE host | ✅ | `s3ble` |
 | BLE advertising | ✅ | 手机可扫到 `s3-rtt` |
 | BLE GATT（读 + 写 + 通知） | ✅ | 写 `0xFF02` 控制 LED |
+| 标准 Device Information `0x180A` | ✅ | `s3ble info` 报 handle |
 | Wi-Fi 5 GHz | ❌ 硬件不支持 | — |
 
 ### 存储

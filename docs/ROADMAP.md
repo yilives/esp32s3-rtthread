@@ -42,18 +42,42 @@ per-activity 缓冲。压 activity 这条路走不通。
 
 ---
 
-### 2. BLE 加一个真实的 GATT service
+### 2. ~~BLE 加一个真实的 GATT service~~（**已完成**）
 
-现在的 service 是演示用的（一个只读计数器 + 一个 LED 开关）。
+加了标准 **Device Information Service (0x180A)**，三个只读字符串特征：
 
-**做法**：加一个电池服务（`0x180F`）或设备信息服务（`0x180A`），
-让手机端的通用 BLE 工具能识别出这是什么设备。
+| 特征 | UUID | 值 |
+| --- | --- | --- |
+| Manufacturer Name | `0x2A29` | `RT-Thread` |
+| Model Number | `0x2A24` | `ESP32-S3` |
+| Firmware Revision | `0x2A26` | `RT-Thread 5.4.0 / s3-rtt` |
 
-**验证**：nRF Connect 能看到标准的 service 名称。
+通用 BLE 工具认识这些 UUID，会把它们渲染成名字而不是一串数字。
 
-**风险**：低。
+### 怎么验证的（没有手机）
 
----
+`s3ble info` 现在报出每个特征的 attribute handle：
+
+```
+s3ble info: handles vendor chr 0x0010/0x0013, dis 0x0016/0x0018/0x001a
+```
+
+**非零就说明 NimBLE 真的注册了。** 这一点不是多余的：`ble_gatts_add_svcs()`
+是按调用返回成功，不是按特征——一个服务被跳过而另一个成功，调用本身不会报错。
+没有这些 handle，"服务在那儿"就是假设；有了它们是可比对的事实。
+
+handle 的递增也符合 GATT 布局：每个特征占两个（declaration + value），
+`0x0016 → 0x0018 → 0x001a` 正是三个 DIS 特征。
+
+### 字符串没有 NUL 结尾
+
+蓝牙规范要求这几个特征是**不带终止符的 UTF-8**。加 `\0` 会让它变成值的
+一部分，很多工具会显示成一个多余的字符。
+
+### 广告包的措辞也改了
+
+原来报 `(service 0x00FF, chr 0xFF01 read, 0xFF02 write)`，现在是
+`(vendor 0x00FF + standard DIS 0x180A)`——两个服务都在，说清楚比列一个强。
 
 ### 3. ~~`s3fs` 加目录操作~~（**已完成**）
 

@@ -512,7 +512,25 @@ s3ble adv: PASS, advertising again
 ```
 msh >s3ble info
 s3ble info: up=1 synced=1 advertising=1 conns=0 last_disc=531 adv_err=0
+s3ble info: handles vendor chr 0x0010/0x0013, dis 0x0016/0x0018/0x001a
 ```
+
+**第二行是验证服务真的注册了。** `0x0000` 意味着那个特征没有被加进去——
+而 `ble_gatts_add_svcs()` 是按服务返回成功，不是按特征，所以调用本身不会报错。
+
+### 6.4 标准 Device Information Service
+
+板子广播两个服务：自定义的 `0x00FF` 和标准的 `0x180A`（Device Information）。
+
+| 标准特征 | UUID | 值 |
+| --- | --- | --- |
+| Manufacturer Name | `0x2A29` | `RT-Thread` |
+| Model Number | `0x2A24` | `ESP32-S3` |
+| Firmware Revision | `0x2A26` | `RT-Thread 5.4.0 / s3-rtt` |
+
+用 nRF Connect 或同类工具连上，这三个会显示成**有名字的字段**，而不是一串十六进制。
+
+自定义服务仍然在：`0xFF01` 读计数器，`0xFF02` 写 LED。
 
 ---
 

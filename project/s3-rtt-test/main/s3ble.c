@@ -136,6 +136,32 @@ static const ble_uuid16_t s_ble_svc_uuid  = BLE_UUID16_INIT(0x00FF);
 static const ble_uuid16_t s_ble_chr_counter_uuid = BLE_UUID16_INIT(0xFF01);
 static const ble_uuid16_t s_ble_chr_led_uuid     = BLE_UUID16_INIT(0xFF02);
 
+/*
+ * Device Information Service, 0x180A.
+ *
+ * The vendor service above works, but a generic BLE tool shows it as numbers:
+ * 0x00FF is not in anyone's database, so nRF Connect and friends cannot say
+ * what this device is. The standard service fixes that - the tool has names for
+ * 0x180A and its characteristics and will render them.
+ *
+ * Three characteristics, all read-only strings:
+ *   0x2A29  Manufacturer Name
+ *   0x2A24  Model Number
+ *   0x2A26  Firmware Revision
+ *
+ * These are the three every tool displays first, and they answer "what am I
+ * looking at" without any custom client.
+ */
+static const ble_uuid16_t s_ble_dis_svc_uuid    = BLE_UUID16_INIT(0x180A);
+static const ble_uuid16_t s_ble_dis_mfr_uuid    = BLE_UUID16_INIT(0x2A29);
+static const ble_uuid16_t s_ble_dis_model_uuid  = BLE_UUID16_INIT(0x2A24);
+static const ble_uuid16_t s_ble_dis_fw_uuid     = BLE_UUID16_INIT(0x2A26);
+
+/* Handles, so `s3ble info` can report where they landed. */
+static uint16_t s_ble_dis_mfr_handle;
+static uint16_t s_ble_dis_model_handle;
+static uint16_t s_ble_dis_fw_handle;
+
 static uint8_t  s_ble_counter_val[4];
 static uint16_t s_ble_counter_handle;
 static uint8_t  s_ble_led_val;
@@ -168,6 +194,31 @@ static const struct ble_gatt_svc_def s_ble_svcs[] = {
             { 0 },
         },
     },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &s_ble_dis_svc_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]){
+            {
+                .uuid      = &s_ble_dis_mfr_uuid.u,
+                .access_cb = s3_ble_chr_access,
+                .flags     = BLE_GATT_CHR_F_READ,
+                .val_handle = &s_ble_dis_mfr_handle,
+            },
+            {
+                .uuid      = &s_ble_dis_model_uuid.u,
+                .access_cb = s3_ble_chr_access,
+                .flags     = BLE_GATT_CHR_F_READ,
+                .val_handle = &s_ble_dis_model_handle,
+            },
+            {
+                .uuid      = &s_ble_dis_fw_uuid.u,
+                .access_cb = s3_ble_chr_access,
+                .flags     = BLE_GATT_CHR_F_READ,
+                .val_handle = &s_ble_dis_fw_handle,
+            },
+            { 0 },
+        },
+    },
     { 0 },
 };
 
@@ -189,6 +240,34 @@ static int s3_ble_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     switch (ctxt->op)
     {
     case BLE_GATT_ACCESS_OP_READ_CHR:
+        /*
+         * Device Information strings.
+         *
+         * UTF-8 without a terminator, per the Bluetooth spec for these
+         * characteristics - a NUL byte would become part of the value and many
+         * tools would print it as a stray glyph.
+         */
+        if (uuid16 == 0x2A29 || uuid16 == 0x2A24 || uuid16 == 0x2A26)
+        {
+            const char *str;
+
+            if (uuid16 == 0x2A29)
+            {
+                str = "RT-Thread";
+            }
+            else if (uuid16 == 0x2A24)
+            {
+                str = "ESP32-S3";
+            }
+            else
+            {
+                str = "RT-Thread 5.4.0 / s3-rtt";
+            }
+
+            return os_mbuf_append(ctxt->om, str, (uint16_t)rt_strlen(str)) == 0
+                   ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        }
+
         if (uuid16 == 0xFF01)
         {
             /* Publish the current counter, freshly formatted each read. */
@@ -491,6 +570,23 @@ static int cmd_ble(int argc, char **argv)
                    (int)s_ble_up, (int)s_ble_synced, (int)s_ble_adv_started,
                    (int)s_ble_conns, (int)s_ble_last_disc_reason,
                    (int)s_ble_adv_err);
+
+        /*
+         * Report the attribute handles.
+         *
+         * A zero handle means NimBLE never registered that characteristic -
+         * ble_gatts_add_svcs() would have failed, but it reports success per
+         * service and it is possible for one service to register while another
+         * is skipped. Without these numbers, "the service is there" is an
+         * assumption; with them it is a fact that can be compared against what
+         * a scanner sees.
+         */
+        rt_kprintf("s3ble info: handles vendor chr 0x%04x/0x%04x, "
+                   "dis 0x%04x/0x%04x/0x%04x\n",
+                   (unsigned)s_ble_counter_handle, (unsigned)s_ble_led_handle,
+                   (unsigned)s_ble_dis_mfr_handle,
+                   (unsigned)s_ble_dis_model_handle,
+                   (unsigned)s_ble_dis_fw_handle);
         return 0;
     }
 
@@ -752,8 +848,8 @@ static int cmd_ble(int argc, char **argv)
 
     if (s_ble_adv_started)
     {
-        rt_kprintf("s3ble: advertising as \"s3-rtt\" (service 0x00FF, "
-                   "chr 0xFF01 read, 0xFF02 write)\n");
+        rt_kprintf("s3ble: advertising as \"s3-rtt\" "
+                   "(vendor 0x00FF + standard DIS 0x180A)\n");
     }
     else
     {
