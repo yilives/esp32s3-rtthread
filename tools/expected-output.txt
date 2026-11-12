@@ -162,6 +162,21 @@ spiloop: spi0 \d+ bytes, \d+ cycles = ~\d+ us \(expected ~\d+ us at \d+ Hz\)
 spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
 spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
 
+# The same test with the loop closed inside the GPIO matrix instead of with a
+# wire. This is the only way to verify the SPI peripheral on a bare board, and
+# it has to be checked after [spiloop] - not before - because the external run
+# is what proves the matrix was restored afterwards.
+[spiloop internal]
+spiloop: internal loopback - MISO input wired to the MOSI pad \(GPIO\d+\)
+spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
+spiloop: PASS - output came back through the input unchanged \(internal loopback\)
+spiloop: MISO input restored to GPIO\d+
+
+# And the external path again, which must be back to reporting no loopback.
+[spiloop #external after internal]
+spiloop: spi0 tx -> rx: 00 00 00 00 00 00 00 00
+spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
+
 # s3adc refuses to measure a pad that belongs to a peripheral, and says why.
 # GPIO8 is i2c0 SDA; measuring it would report the pull-up, not an input.
 [s3adc 1 7]

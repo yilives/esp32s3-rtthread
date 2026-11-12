@@ -187,13 +187,47 @@ import serial
 
 CFG = json.loads(io.open(os.environ["TEMP"] + r"\s3-check-docs.json", encoding="utf-8-sig").read())
 
+# Opening the port can fail with PermissionError(13) for a second or two after
+# a previous process exits on Windows - the handle is closed but not released
+# yet. Measured: a full check run failed this way twice, with no other process
+# holding COM19 and a standalone open succeeding immediately afterwards. Retry
+# rather than making the user rerun the whole thing.
 s = serial.Serial()
 s.port = CFG["port"]
 s.baudrate = CFG["baud"]
 s.timeout = 0.5
 s.dtr = False
 s.rts = False
-s.open()
+
+_opened = False
+for _attempt in range(10):
+    try:
+        s.open()
+        _opened = True
+        break
+    except serial.SerialException as e:
+        if _attempt == 9:
+            print("FAIL: cannot open %s after 10 attempts: %s" % (CFG["port"], e))
+            print("")
+            print("      Two causes, and they need different fixes:")
+            print("")
+            print("      Another program holds it - a terminal, another check-docs")
+            print("      run, or esptool. Close it.")
+            print("")
+            print("      Or the CH340 driver has wedged. The port still appears in")
+            print("      the port list but opens with OSError(22, 'incorrect")
+            print("      function') and stays that way indefinitely. Measured after")
+            print("      a long sequence of runs; retrying does not help, and this")
+            print("      restores it in place:")
+            print("")
+            print("        $d = Get-PnpDevice -Class Ports | Where-Object {")
+            print("            $_.FriendlyName -match 'CH340' }")
+            print("        Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false")
+            print("        Enable-PnpDevice  -InstanceId $d.InstanceId -Confirm:$false")
+            print("")
+            sys.exit(2)
+        time.sleep(0.5)
+
 s.reset_input_buffer()
 
 # Reset via RTS. dtr would pull some CH340 boards into the bootloader.
@@ -262,8 +296,18 @@ for name, spec in CFG["sections"].items():
     s.write((cmd + "\r\n").encode())
     s.flush()
     t0 = time.time()
+    read_error = None
     while time.time() - t0 < wait:
-        raw.extend(s.read(4096))
+        try:
+            raw.extend(s.read(4096))
+        except serial.SerialException as e:
+            # A read can fail mid-run on Windows while the port itself stays
+            # open - measured as "GetOverlappedResult failed (PermissionError
+            # (13))" partway through a long sequence, with the port immediately
+            # reopenable afterwards. Losing all results because one read failed
+            # is worse than reporting which section hit it.
+            read_error = e
+            break
 
     out = bytes(raw[mark:]).decode("utf-8", "replace").replace("\r", "\n")
 
@@ -317,6 +361,9 @@ for name, spec in CFG["sections"].items():
                 lo, hi = int(cm.group(3)), int(cm.group(4))
                 if not (lo <= got <= hi):
                     missing.append("%s   (group %d is %d, outside %d..%d)" % (p, gi, got, lo, hi))
+
+    if read_error is not None:
+        missing = missing + ["SERIAL READ FAILED: %s" % read_error]
 
     results.append((name, len(patterns), missing, out))
 

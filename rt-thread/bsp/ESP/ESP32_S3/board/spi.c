@@ -95,6 +95,18 @@ static spi_dev_t *rt_s3_spi_hw(rt_uint32_t port)
 /* Route SCLK/MOSI/MISO/CS through the GPIO matrix. S3 pads are fully mux-able,
  * so no IO_MUX peripheral function is used - only PIN_FUNC_GPIO plus the matrix
  * signal indices. */
+/*
+ * GPIO11/12/13/10: the S3's IO_MUX default FSPI pins for SCLK/MOSI/MISO/CS, and
+ * all four are free on this board (not flash, not PSRAM, not the LED, not a
+ * strapping pin). Using the defaults means a device wired to a standard
+ * ESP32-S3 SPI header works without reconfiguration.
+ *
+ * A file-scope constant, not a local, because `spiloop internal` needs the MOSI
+ * pad number to close the loop inside the matrix.
+ */
+#define RT_S3_SPI0_PINS                                                 \
+    { .sclk = 12, .mosi = 11, .miso = 13, .cs = 10 }
+
 static rt_err_t rt_s3_spi_set_pins(rt_uint32_t port, const struct rt_s3_spi_pins *p)
 {
     /* The S3 names its GPSPI signals after the FSPI flash lines the matrix
@@ -394,14 +406,39 @@ static int cmd_spiloop(int argc, char **argv)
     char bus_name[8];
     int i;
 
+    rt_bool_t internal_loop = RT_FALSE;
+
     if (argc >= 2)
     {
-        port = (rt_uint32_t)atoi(argv[1]);
+        /*
+         * `spiloop internal` closes the loop inside the chip instead of asking
+         * for a jumper.
+         *
+         * The S3 routes every peripheral signal through the GPIO matrix, and a
+         * matrix input can be sourced from any pad - including the one driving
+         * MOSI. Pointing the controller's MISO input at the MOSI pad makes it
+         * receive its own transmission, which exercises the whole path
+         * (clock, shift register, DMA-less FIFO, matrix in and out) with no
+         * hardware.
+         *
+         * This exists because the jumper path cannot be tested on a bare board,
+         * so "does the SPI peripheral actually work" had no answer that did not
+         * depend on the user owning a wire.
+         */
+        if (rt_strcmp(argv[1], "internal") == 0)
+        {
+            internal_loop = RT_TRUE;
+        }
+        else
+        {
+            port = (rt_uint32_t)atoi(argv[1]);
+        }
     }
 
     if (port >= RT_S3_SPI_NUM)
     {
-        rt_kprintf("usage: spiloop [port 0..%d]\n", RT_S3_SPI_NUM - 1);
+        rt_kprintf("usage: spiloop [port 0..%d] | spiloop internal\n",
+                   RT_S3_SPI_NUM - 1);
         return -1;
     }
 
@@ -450,6 +487,30 @@ static int cmd_spiloop(int argc, char **argv)
 
     rt_memset(rx, 0, sizeof(rx));
 
+    if (internal_loop)
+    {
+        /*
+         * Rewire the controller's MISO input to the MOSI pad.
+         *
+         * The pad numbers come from the bus this command just attached to; see
+         * rt_s3_spi_board_pins(). Connecting the input signal to the MOSI pad
+         * (not to the MISO pad) is the whole trick: MISO then samples what MOSI
+         * drives, one shift-register delay later.
+         */
+        static const struct rt_s3_spi_pins pins = RT_S3_SPI0_PINS;
+        int mi = FSPIQ_IN_IDX;
+
+        if (port != 0)
+        {
+            rt_kprintf("spiloop: internal loopback is wired for port 0 only\n");
+            return -1;
+        }
+
+        esp_rom_gpio_connect_in_signal((uint32_t)pins.mosi, mi, false);
+        rt_kprintf("spiloop: internal loopback - MISO input wired to the MOSI "
+                   "pad (GPIO%d)\n", (int)pins.mosi);
+    }
+
     /*
      * Time the transfer in CPU cycles, not ticks.
      *
@@ -484,6 +545,7 @@ static int cmd_spiloop(int argc, char **argv)
                    (unsigned)cfg.max_hz);
     }
 
+
     rt_kprintf("spiloop: %s tx -> rx:", bus_name);
     for (i = 0; i < (int)sizeof(tx); i++)
     {
@@ -493,7 +555,15 @@ static int cmd_spiloop(int argc, char **argv)
 
     if (rt_memcmp(tx, rx, sizeof(tx)) == 0)
     {
-        rt_kprintf("spiloop: PASS - MOSI and MISO are jumpered and agree\n");
+        if (internal_loop)
+        {
+            rt_kprintf("spiloop: PASS - output came back through the input "
+                       "unchanged (internal loopback)\n");
+        }
+        else
+        {
+            rt_kprintf("spiloop: PASS - MOSI and MISO are jumpered and agree\n");
+        }
     }
     else
     {
@@ -509,7 +579,18 @@ static int cmd_spiloop(int argc, char **argv)
             }
         }
 
-        if (all_zero)
+        if (all_zero && internal_loop)
+        {
+            /*
+             * Internal loopback returning zeros means the matrix connection did
+             * not take effect - a different failure from "no jumper". Saying
+             * "tie MOSI to MISO" here would send the reader looking for a wire
+             * they do not need.
+             */
+            rt_kprintf("spiloop: FAIL - internal loopback returned all zeros, "
+                       "the MISO input is not reaching the MOSI pad\n");
+        }
+        else if (all_zero)
         {
             rt_kprintf("spiloop: no loopback - tie MOSI to MISO with a jumper "
                        "to run this test\n");
@@ -520,17 +601,34 @@ static int cmd_spiloop(int argc, char **argv)
         }
     }
 
+    if (internal_loop)
+    {
+        /*
+         * Put the MISO input back on the MISO pad.
+         *
+         * esp_rom_gpio_connect_in_signal() writes a matrix register and nothing
+         * undoes it. Leaving the loop closed poisoned every later transfer on
+         * this bus: measured, `spiloop` with no jumper reported
+         *
+         *   tx -> rx: a5 5a 01 80 ff 00 3c c3
+         *   PASS - MOSI and MISO are jumpered and agree
+         *
+         * on a board that has no jumper - because MISO was still reading MOSI.
+         * Any real device on this bus would have been shadowed the same way.
+         */
+        static const struct rt_s3_spi_pins pins = RT_S3_SPI0_PINS;
+
+        esp_rom_gpio_connect_in_signal((uint32_t)pins.miso, FSPIQ_IN_IDX, false);
+        rt_kprintf("spiloop: MISO input restored to GPIO%d\n", (int)pins.miso);
+    }
+
     return 0;
 }
-MSH_CMD_EXPORT_ALIAS(cmd_spiloop, spiloop, SPI loopback test (MOSI->MISO jumper));
+MSH_CMD_EXPORT_ALIAS(cmd_spiloop, spiloop, SPI loopback test (MOSI->MISO jumper or internal));
 
 rt_err_t rt_hw_spi_init(void)
 {
-    /* GPIO11/12/13/10: the S3's IO_MUX default FSPI pins for SCLK/MOSI/MISO/CS,
-     * and all four are free on this board (not flash, not PSRAM, not the LED, not
-     * a strapping pin). Using the defaults means a device wired to a standard
-     * ESP32-S3 SPI header works without reconfiguration. */
-    static const struct rt_s3_spi_pins pins0 = { .sclk = 12, .mosi = 11, .miso = 13, .cs = 10 };
+    static const struct rt_s3_spi_pins pins0 = RT_S3_SPI0_PINS;
 
     rt_err_t rc = rt_s3_spi_init_port(0, &pins0, 1000000u);
 
