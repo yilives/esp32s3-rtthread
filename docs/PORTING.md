@@ -428,6 +428,18 @@ irqlat: 10/10 edges, 434..480 cycles = 1.81..2.00 us (mean 1.81 us) at 240 MHz
 434 cycles @ 240 MHz = 1.81 µs。Xtensa 的中断进入本身约 30–50 cycles，其余
 是 GPIO 矩阵、中断控制器和 RT-Thread 的 `_rtt_int_enter`。
 
+**这个数字是 `-Og` 构建下测的**（IDF `CONFIG_COMPILER_OPTIMIZATION_DEBUG`，
+RT-Thread 侧 `rtconfig.py` 显式 `-Og`）。同一块板子改到 `-O2` 后重测：
+
+| 构建 | 中断延迟 |
+| --- | --- |
+| `-Og` | 434..480 cycles |
+| `-O2` | 423..471 cycles |
+
+**只差 2.5%。** 这个结果本身是有意义的：中断延迟主要是硬件跳转加固定代码
+（保存寄存器、调用 `_rtt_int_enter`），编译器能优化的地方很少。所以这个数字
+对构建配置不敏感，可以放心引用。
+
 无线的 ISR 会让这个数字变差，但那不影响正确性——只影响最坏情况下的控制精度。
 
 ## 五、IDF 侧的 16 个改动

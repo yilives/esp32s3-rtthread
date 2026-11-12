@@ -96,6 +96,8 @@ static int cmd_s3net(int argc, char **argv)
     else
     {
         struct hostent *he;
+        /* Declared here, not beside the casts, so both branches share it. */
+        esp_ip4_addr_t gw_addr = { .addr = 0 };
 
         /*
          * Check for a lease before touching lwIP at all.
@@ -137,8 +139,18 @@ static int cmd_s3net(int argc, char **argv)
             }
 
             addr.sin_addr.s_addr = ip.gw.addr;
+            /*
+             * Print from a local esp_ip4_addr_t rather than casting
+             * &addr.sin_addr. struct in_addr and esp_ip4_addr_t have the same
+             * shape but are different types, and reading one through a pointer
+             * to the other is a strict-aliasing violation. It compiled at -Og
+             * and was rejected at -O2 with -Werror=strict-aliasing, which is the
+             * compiler correctly catching undefined behaviour rather than being
+             * pedantic.
+             */
+            gw_addr.addr = ip.gw.addr;
             rt_kprintf("s3net: target gateway " IPSTR ":%d\n",
-                       IP2STR((esp_ip4_addr_t *)&addr.sin_addr), port);
+                       IP2STR(&gw_addr), port);
         }
         else
         {
@@ -155,7 +167,7 @@ static int cmd_s3net(int argc, char **argv)
 
             rt_memcpy(&addr.sin_addr, he->h_addr_list[0], sizeof(addr.sin_addr));
             rt_kprintf("  %-22s ok -> " IPSTR "\n", "gethostbyname",
-                       IP2STR((esp_ip4_addr_t *)&addr.sin_addr));
+                       IP2STR(&gw_addr));
         }
     }
 

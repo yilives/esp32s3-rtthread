@@ -1406,6 +1406,83 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 ---
 
+## 27. 性能数字没有标注测量条件，而实际是 `-Og` 构建
+
+### 问题
+
+文档里 141 处时间数字，**没有一处说明构建条件**。查了 `sdkconfig` 才发现：
+
+```
+CONFIG_COMPILER_OPTIMIZATION_DEBUG=y      -> -Og
+rtconfig.py: CFLAGS += ' -gdwarf-4 -ggdb -Og'
+```
+
+**两边都是 `-Og`。** 这是个调试构建，断言全开。所有文件系统性能数字都是在这个
+前提下测的，而文档一个字都没提。
+
+### 修法
+
+`FILESYSTEM.md` 加了一节"测量条件"，列出芯片、Flash 模式、PSRAM、优化级别、
+tick、MMU 页大小、构建版本、无线状态。**优化级别单独强调**，因为它是唯一一项
+改了就必然要重测、且最容易被忘掉的。
+
+### 顺带做了一次受控对比
+
+改到 `-O2` 重测中断延迟：
+
+| 构建 | 中断延迟 |
+| --- | --- |
+| `-Og` | 434..480 cycles |
+| `-O2` | 423..471 cycles |
+
+**只差 2.5%。** 这是有意义的：中断延迟主要是硬件跳转加固定代码，编译器能优化
+的地方很少。所以这个数字对构建配置不敏感，可以放心引用。
+
+文件系统的时间则明显受影响，但**没有做受控对比**——两次测量的卷新旧不同，两个
+变量混在一起，数字没法直接比。这一点也写进文档了，而不是含糊带过。
+
+---
+
+## 28. `-O2` 编译暴露了一个真实的严格别名 bug（已修）
+
+### 发现
+
+为了做上面的对比改到 `-O2`，构建直接失败：
+
+```
+s3net.c:141:31: error: dereferencing type-punned pointer will break
+                strict-aliasing rules [-Werror=strict-aliasing]
+```
+
+```c
+addr.sin_addr.s_addr = ip.gw.addr;
+rt_kprintf("s3net: target gateway " IPSTR ":%d\n",
+           IP2STR((esp_ip4_addr_t *)&addr.sin_addr), port);
+```
+
+`struct in_addr` 和 `esp_ip4_addr_t` 形状相同但**是不同的类型**，通过指向一个的
+指针读另一个是未定义行为。`-Og` 不说，`-O2` 拒绝——**编译器是对的，这不是挑剔**。
+
+### 修法
+
+不转指针，用本地变量：
+
+```c
+esp_ip4_addr_t gw_addr = { .addr = 0 };
+...
+gw_addr.addr = ip.gw.addr;
+rt_kprintf(..., IP2STR(&gw_addr), port);
+```
+
+### 值得记的地方
+
+**这个问题在 `-Og` 下永远不会暴露**，而项目一直用 `-Og`。也就是说，如果不做这轮
+"标注测量条件"的文档工作，就不会去改优化级别，也就不会发现它。
+
+一个纯文档任务捞出了一个未定义行为。计划外的收获，但它是真的。
+
+---
+
 ## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -1437,3 +1514,5 @@ RESULT: PASS - 10 iteration(s), no fault markers
 | 24 | PWM 只测一个点，timer 寄存器读回为 0 | 低 | 已修：三点扫描，从 duty 字段推满量程 |
 | 25 | I2C "0 device" 无法区分没发/没器件 | 中 | 已加 `i2cwatch` 数 SCL 边沿；10 kHz 默认 + 预热传输 |
 | 26 | 单次检查抓不到累积性问题 | 信息 | 已加 `soak-docs.ps1`；10 轮 65 分钟零漂移 |
+| 27 | 141 处性能数字无测量条件，实际是 `-Og` | 中 | 已加"测量条件"章节；-O2 对比中断延迟只差 2.5% |
+| 28 | `-O2` 暴露严格别名 UB | 中 | 已修：改用本地 `esp_ip4_addr_t` 而非指针强转 |
