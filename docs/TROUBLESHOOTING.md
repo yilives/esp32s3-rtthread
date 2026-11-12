@@ -4,6 +4,17 @@
 
 ---
 
+> **这份文档分两类内容。**
+>
+> 一类是**现在还会遇到的问题**（构建路径、内存不够、QEMU 的空白）。照着做能解决。
+>
+> 另一类是**曾经遇到的问题**，写在 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 里，标注了
+> 修复方式。那份文档是历史记录，不是操作手册——里面描述的现象在你手上这个版本
+> 已经不会再出现了。
+>
+> 如果你照着这里的某一条做却发现对不上，很可能是文档比代码旧。
+> 这种情况值得报一个 issue：**修复过的 bug 留下的过时指引，比没有指引更糟。**
+
 ## 启动
 
 ### 串口没输出 / 输出乱码
@@ -114,10 +125,28 @@ sdkconfig:
 
 | 顺序 | 结果 |
 | --- | --- |
-| Wi-Fi → BLE | ✅ 4/4 |
-| BLE → Wi-Fi | ❌ 0/4 |
+| BLE → Wi-Fi | ✅ 6/6，Guru 0 |
+| Wi-Fi → BLE | ❌ 0/4，`Malloc failed` |
 
-**必须 Wi-Fi 先起。** 这是已知限制，见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)。
+**必须 BLE 先起，Wi-Fi 后起。** `s3wifi` 会在 `esp_wifi_init()` **之前**主动拆掉
+BLE——Wi-Fi 驱动要一次性分配 10 个 1600 字节的静态 RX buffer，BLE 还占着内部 DRAM
+时这一步会失败（`Expected to init 10 rx buffer, actual is 9`）。
+
+```
+msh >s3ble                    # 1. 先起 BLE
+msh >s3wifi <ssid> <pass>     # 2. 连 Wi-Fi（会自动拆掉 BLE）
+msh >s3net example.com        # 3. 上网
+```
+
+反过来的顺序不行：BLE controller 要 **>56 KB 的连续内部 DRAM**，Wi-Fi 占掉后
+只剩 31 KB 的最大块。这是内存问题，不是中断分配器的问题。
+
+完整分析（含试过但无效的四个方案）见
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 12 条。
+
+> **这张表曾经是反的。** 它长期写着"Wi-Fi → BLE ✅ 4/4 / BLE → Wi-Fi ❌ 0/4 /
+> 必须 Wi-Fi 先起"，与 KNOWN-ISSUES 第 12 条完全相反。读者照着做会失败，还会
+> 以为是自己弄错了。
 
 ### `s3wifi` 报 `FAIL, no WIFI_EVENT_STA_START`
 
@@ -212,10 +241,23 @@ python esp-idf-rtt/components/partition_table/gen_esp32part.py partition.bin
 
 如果反复发生，`s3fs erase` 后重启。
 
-### 写小文件特别慢（100+ ms 一个）
+### 写小文件特别慢（**273 ms 一个**）
 
 **这是正常的**，见 [FILESYSTEM.md](FILESYSTEM.md)。4 KB 扇区 + IDF 的
-`diskio_wl` 每次写前必擦，一个 64 字节文件消耗约 21 KB flash。
+`diskio_wl` 每次写前必擦。
+
+实测（新格式化卷，`s3fsbench small`）：
+
+```
+s3fsbench: create 32 x 64 B in 8766 ms (3 files/s, 273 ms each)
+s3fsbench: create 32 small files -> 152 writes (557312 B), 136 erases (557056 B)
+```
+
+一个 64 字节文件消耗 **约 17 KB flash**（17416 字节写 + 17408 字节擦除）。
+
+> 这条以前写的是 "100+ ms" 和 "约 21 KB"，两个数字都偏低。数字变了的原因：
+> 4 KB 扇区配置和 `use_one_fat` 优化之后，每次写入的扇区数固定下来，时间也稳定在
+> 273 ms。**这是配置改变后的新基线，不是回归。**
 
 ---
 
@@ -223,19 +265,40 @@ python esp-idf-rtt/components/partition_table/gen_esp32part.py partition.bin
 
 ### `xtensa_context.h: No such file or directory`
 
-BSP 的 scons 脚本找不到 IDF 头文件。设：
+BSP 的 scons 脚本找不到 IDF 头文件。它读 `RTT_IDF_PATH`：
 
 ```powershell
 $env:RTT_IDF_PATH = "<IDF_PATH>"
 ```
 
+**用 `tools\build.ps1` 的话不需要手动设**——`tools\env.ps1` 从 `IDF_PATH`
+自动同步过去（`$env:RTT_IDF_PATH = $env:IDF_PATH`）。只有直接调 `scons` 或
+`idf.py` 时才需要自己处理。
+
+两个变量都要用**正斜杠**：BSP 的 SConscript 把它们拼进 C 的 `-I` 参数，反斜杠会
+被当成转义。`env.ps1` 已经做了这个转换。
+
 ### `riscv32-esp-elf-gcc ... not found`
 
-ULP 的嵌套构建找不到 RISC-V 工具链。检查 `build.ps1` 的 `$pathParts` 是否包含：
+ULP 的嵌套构建找不到 RISC-V 工具链。
+
+**先确认它装了**——`tools/env.ps1` 是自动发现的，不靠硬编码版本：
 
 ```powershell
-"$tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin",
+Get-ChildItem "$env:USERPROFILE\.espressif\tools\riscv32-esp-elf" -Directory
 ```
+
+正常会看到 `esp-15.2.0_20251204` 之类的目录。空的就说明装 IDF 时没装这个目标：
+
+```powershell
+install.ps1 esp32s3
+```
+
+装好之后重开一个 shell——`env.ps1` 在进程启动时读 `PATH`，当前会话不会自己刷新。
+
+> 这一条以前写的是"检查 `build.ps1` 的 `$pathParts` 是否包含
+> `esp-15.2.0_20251204`"。**那已经不对了**：工具链现在是按名字自动查找目录下的
+> 任意版本，写死版本号是旧的实现方式。
 
 ### `ulp_riscv.h: No such file or directory`
 
