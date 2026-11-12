@@ -267,7 +267,7 @@ FL enter=1 sent=1 spins=17117 block=0
 | `smp.c` | 第二核启动、IPI |
 | `critical.c` | FreeRTOS 临界区映射（用 local IRQ） |
 | `gpio.c` / `pwm.c` / `i2c.c` / `spi.c` / `adc.c` | 各外设 |
-| `port_intr.h` | `rt_hw_intr_route` / `rt_hw_intr_is_enabled` 声明 |
+| `port_intr.h` | `rt_hw_intr_route` / `rt_hw_interrupt_is_masked` 声明 |
 
 ### 3.1 `board.c` 里为什么有些东西"故意不做"
 

@@ -26,6 +26,7 @@
 | `soak-docs.ps1` | **单次启动内重复跑工作负载，看有无漂移**（见下）|
 | `verify-doc-links.ps1` | **检查文档交叉引用是否还有效**（见下）|
 | `verify-doc-facts.ps1` | **核对文档里的结构性数字**（见下）|
+| `verify-doc-symbols.ps1` | **核对文档引用的符号名是否存在**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -344,6 +345,54 @@ patch 文件触及的**路径数**。不试图验证散文、时序或需要开�
 
 改成按换行切分、并用 `-Recurse` 之后全部吻合。**一个误报 11 次的检查器比没有更糟**
 ——它会让人开始怀疑报告而不是代码。
+
+## `verify-doc-symbols.ps1`：文档里引用的符号
+
+```powershell
+.\tools\verify-doc-symbols.ps1
+```
+
+提取文档里所有反引号包住的 `rt_*` / `heap_caps_*` / `esp_*` 标识符，逐个确认
+它们在源码里存在。当前 42 个符号，搜 8013 个源文件（含 IDF 头文件），约 6 秒。
+
+**期望**：
+
+```
+  42 quoted symbol(s) across 9 file(s)
+  searched 8013 source file(s)
+
+  Every quoted symbol exists in the sources.
+```
+
+### 抓到过什么
+
+README 的支持情况表写 `| LEDC PWM | rt_pwm_device | s3rt pwm |`，而代码里是
+`struct rt_device_pwm`。**同样两个词，顺序反了**——读起来完全正常，指向不存在
+的东西。
+
+`PORTING.md` 写 `port_intr.h` 提供 `rt_hw_intr_route` / `rt_hw_intr_is_enabled`，
+实际第二个叫 `rt_hw_interrupt_is_masked`。
+
+### 它不检查什么
+
+**只证明名字在源码里出现过，不证明它是对的那一行。** PWM 那个错会被抓到；
+一个"看着合理但配错了行"的名字不会被抓到。这一点写在脚本头部，免得高估它。
+
+另外它会跳过出现在"删除/移除"语境里的符号——`PORTING.md` 说 "删除 `rt_xt_ip3`
+调试探针"，那个符号**本来就不该存在**，报错是误报。
+
+### 搜索范围
+
+| 树 | 内容 |
+| --- | --- |
+| `rt-thread/bsp/ESP/ESP32_S3` | BSP |
+| `rt-thread/libcpu/xtensa` | CPU port |
+| `esp-idf/components/rtthread` | 兼容层 |
+| `project/s3-rtt-test/main` | 应用 |
+| `../rt-thread/src` + `include` | 上游内核 |
+| `../esp-idf-rtt/components`（仅 `.h`）| IDF API |
+
+最后一项只搜头文件：那棵树很大，而声明才是要找的东西。
 
 ## 参数
 
