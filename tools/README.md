@@ -250,6 +250,51 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
+## `check-docs.ps1` 的元数据校验
+
+`expected-output.txt` 的每节头部带两种**被代码读取**的声明：
+
+```
+[s3fs rm s3fs.txt]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        same file
+# order: after s3fs read
+s3fs rm: removed /storage/s3fs.txt
+```
+
+| 键 | 取值 | 作用 |
+| --- | --- | --- |
+| `# scope:` | `U` / `B` / `E` | 这一节失败意味着什么 |
+| `# order:` | `after <节>` / `before <节>` | 位置约束 |
+
+打开板子之前，`check-docs.ps1` 会检查四件事：
+
+1. 每节**都有** `# scope:`（缺了报错，而不是在 `-List` 里显示 `[?]`）
+2. `scope` 的值必须是 `U` / `B` / `E`
+3. `order` 指向的节**必须存在**，且方向只能是 `after` / `before`
+4. 头部出现**未知的键**就报错（防止 `# scpoe:` 这种拼写错误被静默忽略）
+
+四条都做过负向测试：删掉 scope、写成 `X`、指向不存在的节、加一个拼错的键——
+全部 exit 1 并报出具体位置。
+
+### 元数据靠**位置**区分，不靠语法
+
+这曾经是个真问题。第一版校验把这段散文
+
+```
+# apart: 8 data bits plus the ACK slot is 9 falling edges.
+```
+
+当成了键名为 `apart` 的元数据。它和 `# scope: U - ...` 在语法上完全一样。
+
+结构上的区别是：**元数据只出现在节头之后、第一个 pattern 之前**。校验据此判断，
+散文怎么写都不会误报。
+
+### 为什么值得做
+
+`scope` 缺失曾经导致 `-List` 里出现 `[?]`，而那是我盯着输出才发现的。**工具应该
+主动报错，不该指望人看输出。** 而一个被代码读取的字段，写错时静默降级是最差的行为。
+
 ## `check-docs.ps1` 的顺序约束
 
 有些节必须在别的节之前或之后跑，否则会失败——而不是发现 bug。这类约束写在

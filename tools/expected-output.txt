@@ -64,7 +64,18 @@
 #
 #  4. Reboot sections come last, and the checker enforces that itself.
 #
-#  5. The remaining order requirements are declared, not remembered. Each section
+#  5. Metadata lives in the block directly under a [section] header, before its
+#     first pattern. Two key lines exist and both are read by check-docs.ps1:
+#
+#       # scope: U|B|E - what a failure there means (see below)
+#       # order: after <section> | before <section>
+#
+#     The "before the first pattern" part is structural, not cosmetic. `# scope:`
+#     and a sentence that happens to start "# apart:" are the same shape, and the
+#     first version of the integrity check reported the i2cwatch prose as a key
+#     called "apart". Only position distinguishes them.
+#
+#  6. The remaining order requirements are declared, not remembered. Each section
 #     that has one carries a line directly under its header:
 #
 #       # order: after <section>

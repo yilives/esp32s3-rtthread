@@ -125,6 +125,86 @@ foreach ($line in Get-Content $expectFile) {
     }
 }
 
+# ------------------------------------------------------ metadata integrity ---
+#
+# The file now carries two kinds of declarative metadata: `# scope:` on every
+# section and `# order:` where position matters. Both are read by code, so both
+# can rot: a section added without a scope used to show up as `[?]` in -List and
+# nothing failed, and a scope value of anything other than U/B/E was simply
+# carried through as a string.
+#
+# Everything below runs before the port is opened, for the same reason the order
+# check does: a malformed file is a two-second fix and a wasted run is forty
+# minutes.
+$metaErrs = @()
+
+$KnownMeta = @('scope', 'order')
+$knownSections = @($sections.Keys)
+
+# Metadata lives in the block directly under a [section] header, before its first
+# pattern. That is a structural rule, not a stylistic one: it is the only thing
+# that distinguishes `# scope: U - ...` from prose that happens to start the same
+# way. `# apart: 8 data bits plus the ACK slot is 9 falling edges` is a sentence
+# from the i2cwatch discussion and parsed as a key called "apart".
+$metaOwner = $null
+$inHeader  = $false
+$scopeSeen = @{}
+foreach ($line in Get-Content $expectFile) {
+    $t = $line.Trim()
+    if ($t -match '^\[!?(.+)\]$') {
+        $metaOwner = $Matches[1]
+        $inHeader  = $true
+        continue
+    }
+    if (-not $metaOwner) { continue }
+    if (-not $t) { continue }
+
+    # A pattern or constraint ends the header block for good.
+    if (-not $t.StartsWith('#')) { $inHeader = $false }
+    if (-not $inHeader) { continue }
+    if ($t -notmatch '^#\s*([A-Za-z][A-Za-z0-9_-]*)\s*:') { continue }
+
+    $kind = $Matches[1].ToLower()
+    if ($KnownMeta -notcontains $kind) {
+        $metaErrs += "[$metaOwner] has '# ${kind}:' - not a known key (known: $($KnownMeta -join ', '))"
+        continue
+    }
+
+    if ($kind -eq 'scope') {
+        $scopeSeen[$metaOwner] = $true
+        if ($t -notmatch '^#\s*scope:\s*([UBE])\b') {
+            $metaErrs += "[$metaOwner] scope must start with U, B or E - got: $t"
+        }
+    }
+    if ($kind -eq 'order') {
+        if ($t -notmatch '^#\s*order:\s*(after|before)\s+(.+)$') {
+            $metaErrs += "[$metaOwner] order must read 'after <section>' or 'before <section>' - got: $t"
+        } else {
+            $target = $Matches[2].Trim()
+            if ($knownSections -notcontains $target) {
+                $metaErrs += "[$metaOwner] order names '$target', which is not a section"
+            }
+        }
+    }
+}
+
+foreach ($k in $knownSections) {
+    if (-not $scopeSeen[$k]) {
+        $metaErrs += "[$k] has no '# scope:' line - say whether a failure there is a defect (U), board-specific (B) or environmental (E)"
+    }
+}
+
+if ($metaErrs.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  METADATA PROBLEMS in $expectFile" -ForegroundColor Yellow
+    foreach ($e in $metaErrs) { Write-Host "    $e" -ForegroundColor Yellow }
+    Write-Host ""
+    Write-Host "  Both keys are read by this script, so a malformed one is a bug in the" -ForegroundColor DarkGray
+    Write-Host "  file, not a property of the board." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 1
+}
+
 # `# order: after X` / `# order: before X` lines are checked here, at parse time,
 # before the board is opened. A violated order used to be invisible until the run
 # reached that section - 40 minutes in - and was found that way twice. The cost of
