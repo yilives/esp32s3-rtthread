@@ -1582,6 +1582,88 @@ rt_kprintf(..., IP2STR(&gw_addr), port);
 
 ---
 
+## 31. 全新克隆审计：能构建，但 README 少了一步
+
+### 做了什么
+
+在 `C:\s3clone` 里 `git clone` 这个仓库，只按 README 的步骤走。第一次连上游都没
+准备，构建直接报：
+
+```
+IDF_PATH is not set and no ESP-IDF checkout was found next to this repository.
+```
+
+### 问题 1：README 没说要先把上游放成**同级目录**
+
+`tools/env.ps1` 会去 `..\rt-thread` 和 `..\esp-idf-rtt` 找上游——这个设计是好的
+（不用设环境变量），但**README 从没说过**。它直接给出
+
+```powershell
+.\tools\fetch-upstream.ps1 -RtThreadPath I:\RT_thread\rt-thread -IdfPath I:\RT_thread\esp-idf-rtt
+```
+
+那是我自己的路径。新读者会照抄，然后失败。
+
+已加一段目录结构示意，并说明也可以用 `IDF_PATH` / `RTTHREAD_ROOT` 环境变量指向
+任意位置。
+
+### 问题 2：首次构建会打印 `fatal:`，但构建是成功的
+
+把上游放好后重新构建：
+
+```
+fatal: no submodule mapping found in .gitmodules for path 'docs/开发板资料/docs'
+fatal: not a git repository: .../.git/modules/components/openthread/...
+Project build complete. To flash, run:
+```
+
+**同一段输出里既有 `fatal:` 又有 `build complete`。** 这是最容易让人放弃的那种输出。
+
+来源：CMake 配置阶段会调 `git submodule` 查询 IDF 树的状态。那棵 IDF 树是打过补丁
+的本地副本，git 索引里留着**没有 `.gitmodules` 映射的 submodule 记录**——实测
+`git ls-files -s` 显示那条路径是 `160000` 模式（子模块）但没有对应配置。
+
+### 更麻烦的是退出码
+
+```
+powershell -File build.ps1 ... | Select-Object -Last 12
+   -> [exit code: 1]      <- 看起来失败
+
+powershell -File build.ps1 ... *> build.log
+   "exit code: $LASTEXITCODE"
+   -> 0                   <- 实际成功
+```
+
+**通过管道时 PowerShell 会记一条 native stderr 错误，于是报 exit 1。** 重定向到
+文件就不会。这个差异本身就会误导人。
+
+### 三处修改
+
+1. `README.md`：加了目录结构示意，说明"上游要放成同级目录"。
+2. `docs/BUILD.md` 新增「3a. 第一次构建的 git 噪音」，讲清来源、怎么确认成功、
+   以及怎么去掉那条野记录。
+3. `tools/build.ps1`：**首次配置成功后主动打印一段解释**，不靠读者先去读文档。
+
+第 3 条是关键——文档要人去找，而提示就在他正在看的输出里。
+
+### 验证
+
+改完后在 `C:\s3clone` 里删掉 `build/` 重跑：
+
+```
+exit code (fresh): 0
+Project build complete. To flash, run:
+  note: if the output above contained
+          fatal: no submodule mapping found in .gitmodules for path ...
+        that came from CMake querying the IDF tree's git state. The build
+        still succeeded ...
+```
+
+**而且产出的二进制与开发机上字节数完全一致**（1129360 字节）。哈希不同是正常的
+（构建时间戳会嵌进去），大小相同说明代码路径一样。
+
+---
+
 ## 已修条目的回归覆盖
 
 读者会问："你说修了，我怎么知道？"这张表回答它。
@@ -1650,3 +1732,4 @@ rt_kprintf(..., IP2STR(&gw_addr), port);
 | 28 | `-O2` 暴露严格别名 UB | 中 | 已修：改用本地 `esp_ip4_addr_t` 而非指针强转 |
 | 29 | 排障文档三条指引过时，一条完全相反 | **高** | 已修：无线顺序、写小文件数字、工具链查找方式 |
 | 30 | "优化后"取了最快值；文档间重复且算术不自洽 | 中 | 已修：标注时间不可靠、修正算术、取消重复 |
+| 31 | README 缺"上游要放同级目录"；首次构建有误导性 fatal | 中 | 已修：README/BUILD 补说明，build.ps1 主动提示 |

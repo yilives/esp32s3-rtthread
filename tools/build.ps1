@@ -105,6 +105,13 @@ if ($NoPsram) {
 
 if ($Target) { $argv = @("-DIDF_TARGET=$Target") + $argv }
 
+# Remember whether this is a fresh configure. A first configure runs CMake from
+# scratch, and CMake queries the IDF tree with `git submodule`, which can print
+# `fatal: no submodule mapping found ...` on a tree whose index has a dangling
+# submodule record. That output is alarming and harmless, so it is explained when
+# it is most likely - the first build - rather than never.
+$freshConfigure = -not (Test-Path (Join-Path $Project 'build\CMakeCache.txt'))
+
 Push-Location $Project
 try {
     & $script:S3Python $script:S3IdfPy @argv
@@ -114,6 +121,16 @@ try {
 }
 
 if ($code -ne 0) { exit $code }
+
+if ($freshConfigure) {
+    Write-Host ""
+    Write-Host "  note: if the output above contained" -ForegroundColor DarkGray
+    Write-Host "          fatal: no submodule mapping found in .gitmodules for path ..." -ForegroundColor DarkGray
+    Write-Host "        that came from CMake querying the IDF tree's git state. The build" -ForegroundColor DarkGray
+    Write-Host "        still succeeded - it printed 'Project build complete'. Details in" -ForegroundColor DarkGray
+    Write-Host "        docs/BUILD.md, section 3a." -ForegroundColor DarkGray
+    Write-Host ""
+}
 
 if ($Qemu) {
     $qemuArgs = @('-Project', $Project, '-BuildDir', 'build-qemu')

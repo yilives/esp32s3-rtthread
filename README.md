@@ -64,9 +64,21 @@ cd esp32s3-rtthread
 
 ### 2. 准备上游
 
+**先把上游放到仓库的同级目录。** `tools/env.ps1` 按这个顺序找：
+
+```
+<你的目录>/
+├── esp32s3-rtthread/     <- 刚克隆的
+├── rt-thread/            <- 上游 RT-Thread
+└── esp-idf-rtt/          <- IDF fork
+```
+
+找不到会报 `IDF_PATH is not set and no ESP-IDF checkout was found next to this
+repository`。也可以直接设 `IDF_PATH` / `RTTHREAD_ROOT` 环境变量指向任意位置。
+
 ```powershell
-# RT-Thread：只取 BSP 和 libcpu，不需要完整克隆
-.\tools\fetch-upstream.ps1 -RtThreadPath I:\RT_thread\rt-thread -IdfPath I:\RT_thread\esp-idf-rtt
+# 路径按你的实际位置填
+.\tools\fetch-upstream.ps1 -RtThreadPath ..\rt-thread -IdfPath ..\esp-idf-rtt
 ```
 
 脚本做三件事：
@@ -82,6 +94,14 @@ cd esp32s3-rtthread
 ```powershell
 .\tools\build.ps1 -Project .\project\s3-rtt-test
 ```
+
+> **这一步在干净目录里验证过。** 全新 `git clone` 到 `C:\s3clone`，上游放成同级
+> 目录，只按本 README 走——构建成功，产出的 `s3_rtt_test.bin` 与开发机上的
+> **字节数完全一致**（1113664 / 1129360，随配置而变，但同配置下相同）。
+>
+> 第一次构建可能打印几行 `fatal: no submodule mapping found ...`。那是 IDF 树里
+> 的 git 残留，**不是构建失败**——构建仍然成功。见
+> [docs/BUILD.md](docs/BUILD.md) 的「第一次构建的 git 噪音」。
 
 ### 4. 烧录
 

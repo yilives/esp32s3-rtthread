@@ -180,6 +180,67 @@ $env:RTT_EXEC_PATH  = "C:\...\xtensa-esp-elf\bin"
 
 ---
 
+## 3a. 第一次构建的 git 噪音
+
+全新克隆第一次构建，可能会看到这类输出：
+
+```
+fatal: no submodule mapping found in .gitmodules for path 'docs/<某目录>/docs'
+fatal: not a git repository: .../esp-idf-rtt/.git/modules/components/openthread/...
+```
+
+**这不是构建失败。** 构建继续跑，最后照样 `Project build complete`。
+
+### 它从哪来
+
+CMake 在配置阶段会调 `git submodule` 去查询 IDF 树的子模块状态。如果那棵 IDF 树
+是打过补丁的本地副本，它的 git 索引里可能留着**没有 `.gitmodules` 映射的 submodule
+记录**——比如上面那个路径，索引里是 `160000` 模式（子模块），但 `.gitmodules` 里
+没有对应条目。
+
+`git` 遇到这种不一致会报 `fatal:`，但 CMake **不把它当错误**，继续配置。
+
+### 怎么确认构建真的成功了
+
+看两样东西：
+
+```powershell
+# 1. 二进制存在且非空
+Get-Item .\project\s3-rtt-test\build\s3_rtt_test.bin
+
+# 2. 最后一行是这个
+#    Project build complete. To flash, run:
+```
+
+**别只看 stderr 里有 `fatal` 就以为失败。** 这是本项目唯一一处 stderr 有红色输出
+但构建成功的地方。
+
+实测：删掉 `build/` 后首次构建，把输出重定向到文件再查 `$LASTEXITCODE`，结果是
+**0**。只有在把输出通过管道（`| Select-Object`）转给别的命令时，PowerShell 才会把
+native stderr 当成错误记录，于是显示 `[exit code: 1]`——**那个 1 来自 PowerShell
+的错误处理，不是构建本身**。
+
+想确认构建真的成功，最可靠的是这两条：
+
+```powershell
+powershell -NoProfile -File .\tools\build.ps1 -Project .\project\s3-rtt-test *> build.log
+"exit code: $LASTEXITCODE"        # 0 就是成功
+Select-String -Path build.log -Pattern "Project build complete"
+```
+
+### 想让噪音消失
+
+在 IDF 树里把那条野记录去掉：
+
+```powershell
+cd <IDF_PATH>
+git rm --cached <那个路径>     # 只从索引移除，不删磁盘文件
+```
+
+或者忽略它——不影响构建结果。
+
+---
+
 ## 4. 烧录
 
 ```powershell
