@@ -23,6 +23,7 @@
 | `verify-doc-commands.ps1` | **核对文档提到的命令是否真的导出**（见下）|
 | `list-shim-api.ps1` | **列出 FreeRTOS 兼容层实际实现的 API**（见下）|
 | `find-duplication.ps1` | **找出写了两遍的逻辑**（见下）|
+| `soak-docs.ps1` | **单次启动内重复跑工作负载，看有无漂移**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -202,6 +203,49 @@ ft_task.c        988 行    0 个               <- 线程映射
 
 工具**不找 bug**，它找的是让这些 bug 可能的重复。找到之后按"这两处应该合并"
 处理，而不是"两处各修一遍"——后者正是下一次疏漏的来源。
+
+## `soak-docs.ps1`：跑很久会不会变
+
+```powershell
+.\tools\soak-docs.ps1                        # 10 轮
+.\tools\soak-docs.ps1 -Iterations 30
+.\tools\soak-docs.ps1 -WifiSsid <ssid> -WifiPass <pass>
+```
+
+每轮跑一遍完整工作负载（`s3smp`、`s3heap`、`free`、`s3rt irqlat`、`s3rt psram`、
+`i2cwatch`、`s3fs`、`s3fsbench small`、`s3fs read`、`s3ble`、`s3ulp`，带参数时
+再加 `s3wifi` / `s3net`），然后抓一次内存快照。
+
+**它判的不是命令输出**——那是 `check-docs.ps1` 的事。它回答的是另一个问题：
+**做完全部这些 N 遍之后，板子还是不是同一个状态。**
+
+观察三件事：
+
+1. 内部 DRAM / PSRAM / 内核堆是否单调下降（泄漏）
+2. UART 中断计数是否异常增长（中断风暴）
+3. 是否出现 `Guru` / `rst:0x7` / `assert failed` / `Malloc failed`
+
+### 实测 10 轮（约 65 分钟）
+
+```
+  iter  dram free psram free kern avail      irq     tick
+  1         27348    8386120      87616      284   453147
+  2         27324    8386120      87616      566   890276
+  ...
+  10        27324    8386120      87616     2822  4388197
+
+  dram free    first 27348, last 27324, delta -24 bytes
+  psram free   first 8386120, last 8386120, delta +0 bytes
+  kernel avail first 87616, last 87616, delta +0 bytes
+RESULT: PASS - 10 iteration(s), no fault markers
+```
+
+**-24 字节**出现在第 1 轮和第 2 轮之间，之后完全不动。那是首次使用时的一次性
+分配（缓存或池），不是泄漏——泄漏会持续下降。
+
+`irq` 每轮 +282 是键盘输入本身产生的中断，稳定即可。
+
+`tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
 ## 参数
 
