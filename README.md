@@ -136,7 +136,14 @@ idf heap:
 **期望**：
 
 ```
-RESULT: PASS - all 6 expectation(s) matched
+RESULT: PASS - all 9 expectation(s) matched
+```
+
+九个断言包含双核（`CPUS_NR=2`）、文件系统（QEMU 模拟了 SPI flash，`s3fs` 能
+挂载、写 511 字节、读回）和 `-NoPsram` 的明确报告。
+
+GPIO 在 QEMU 里恒为 0，所以 `i2cscan` / `spiloop` / `s3adc` **不在门禁里** ——
+它们会因为在模拟器上没有引脚而失败，那不是移植的缺陷。
 ```
 
 `-NoPsram` 建到 `build-qemu/`（无 PSRAM、DIO flash），`build/` 留给硬件镜像。

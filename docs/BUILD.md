@@ -332,13 +332,15 @@ RESULT: PASS - all 19 section(s) matched
 改动任何命令的输出格式后都应该跑一次——否则文档会悄悄过时。这个脚本第一次
 跑就发现了 `s3wifiscan` 的两个崩溃，而那条命令在之前的回归里从未被执行过。
 
-## 6. QEMU（可选）
+
 
 > `-NoPsram` 曾经**完全没生效**：注释说建到 `build-qemu/`，实际建到 `build/`，
 > 两个变体互相覆盖。原因是 `-B build-qemu` 从没传给 idf.py——`-B` 是 idf.py 的
 > *全局*选项，必须放在子命令前面，而那段代码的位置错了。现在已验证：
 > `build/` 是硬件镜像（有 PSRAM、QIO），`build-qemu/` 是模拟器镜像（无 PSRAM、DIO）。
 
+
+## 6. QEMU（可选）
 
 没有硬件时可以用 QEMU 跑回归。注意 QEMU 不模拟 PSRAM，需要另一套 sdkconfig：
 
@@ -347,7 +349,7 @@ RESULT: PASS - all 19 section(s) matched
 .\tools\qemu.ps1  -Project .\project\s3-rtt-test -BuildDir build-qemu -TimeoutSec 70
 ```
 
-**QEMU 里也能看到两个核。** gate 现在会跑 `s3smp` 并检查 `CPUS_NR=2` ——
+**QEMU 里也能看到两个核。** gate 会跑 `s3smp` 并检查 `CPUS_NR=2` ——
 原来的 5 条期望全都能被单核启动满足，所以 CPU1 起没起来它不知道。
 
 ```
@@ -359,11 +361,42 @@ s3smp: CPUS_NR=2, this core=0
 **期望**：
 
 ```
-RESULT: PASS - all 5 expectation(s) matched
+RESULT: PASS - all 9 expectation(s) matched
 ```
+
+九个断言除了内核启动、双核、tick、UART 中断和自检，还覆盖：
+
+| 断言 | 为什么值得加 |
+| --- | --- |
+| `s3fs: PASS, mounted at` | QEMU 模拟了 SPI flash 分区，文件系统**完整可用**——挂载、写 511 字节、读回。这是唯一能在无硬件时验证的文件系统路径 |
+| `psram : built without PSRAM support` | QEMU 镜像用 `-NoPsram` 编译，命令必须明确报告，而不是含糊失败 |
+
+### QEMU 验证不了什么
+
+GPIO 在 QEMU 里恒为 0，所以依赖真实引脚的命令会**如实失败**而非假装成功：
+
+```
+i2cscan: idle levels SCL(GPIO9)=0 SDA(GPIO8)=0 (bus NOT idle high ...)
+i2cscan: 0 device(s) on i2c0, 0 flaky, 112 timeout(s)
+```
+
+板子上同一条命令是 `0 timeout(s)`。**这些命令不能进 QEMU 门禁**，否则门禁会因为
+模拟器的空白而失败，而不是因为移植的缺陷：
+
+| 命令 | QEMU 下的表现 |
+| --- | --- |
+| `i2cscan` / `i2cprobe` | 112 次超时 |
+| `spiloop` | 读回全零 |
+| `s3adc` | 悬空读数 |
+| `s3rt led` / `pwm` / `key` | 无输出可观测 |
 
 > **坑**：构建失败时 `qemu.ps1` 会静默跑上一次的镜像。
 > 每次都确认 `.elf` / `.bin` 的时间戳是新的。
+
+### 构建目录是独立的
+
+`-NoPsram` 写 `build-qemu/`，不影响 `build/` 的硬件镜像。实测两个 `.bin`
+的修改时间各自独立，可以交替构建。
 
 ---
 

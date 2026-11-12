@@ -79,13 +79,28 @@ param(
         # Both cores running. Added because the gate passed while QEMU's CPU1
         # was still parked in call_start_cpu1 - the five original expectations
         # are all satisfied by a single-core boot, so nothing caught it.
-        'CPUS_NR=2'
+        'CPUS_NR=2',
+        # The filesystem works under QEMU. Measured: the flash partition is
+        # modelled, s3fs mounts, writes 511 bytes and reads them back. This is
+        # the only part of the port that could be checked without hardware
+        # before this expectation existed, and nothing was checking it.
+        's3fs: PASS, mounted at',
+        # PSRAM is compiled out for the QEMU image, and the command has to say
+        # so rather than failing obscurely or pretending.
+        'psram : built without PSRAM support'
     ),
     # s3smp is in here because the gate otherwise cannot tell a dual-core boot
     # from a single-core one: every other expectation is satisfied by CPU0
     # alone. Measured - QEMU's CPU1 sat in call_start_cpu1 while the gate
     # reported PASS, and only a manual GDB session showed it.
-    [string[]]$InputLine = @('s3rt', 's3rt irq', 's3rt tick', 's3smp', 'list thread', 'free'),
+    [string[]]$InputLine = @(
+        's3rt', 's3rt irq', 's3rt tick', 's3smp', 'list thread', 'free',
+        # Deliberately NOT i2cscan/spiloop/s3adc: QEMU leaves the pads at 0,
+        # so those report bus-not-idle or time out. Measured - i2cscan gives
+        # 112 timeouts under QEMU against 0 on the board. Including them would
+        # make the gate fail on an emulation gap rather than a port defect.
+        's3fs', 's3heap', 's3rt psram'
+    ),
     # How long to wait before typing InputLine, so the shell prompt exists and
     # the selftest has printed its verdict.
     [int]$InputDelaySec = 12,
@@ -94,6 +109,34 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# `powershell -File qemu.ps1 -InputLine a,b` hands PowerShell one string, not an
+# array - -File has no notion of arrays, the same limitation the -Expect comment
+# above records. Split on commas here so a caller can pass several commands
+# without dropping to -Command. Measured: without this, "s3smp,s3heap,s3rt"
+# arrived as a single line and msh answered "s3smp,s3heap,s3rt: command not
+# found", which reads like a firmware failure rather than an argument problem.
+if ($InputLine.Count -gt 0) {
+    $split = @()
+    foreach ($line in $InputLine) {
+        foreach ($part in ($line -split ',')) {
+            $p = $part.Trim()
+            if ($p) { $split += $p }
+        }
+    }
+    $InputLine = $split
+}
+
+if ($Expect.Count -gt 0) {
+    $split = @()
+    foreach ($e in $Expect) {
+        foreach ($part in ($e -split ',(?![^{]*\})')) {
+            $p = $part.Trim()
+            if ($p) { $split += $p }
+        }
+    }
+    $Expect = $split
+}
 
 $repo = Split-Path -Parent $PSScriptRoot
 
