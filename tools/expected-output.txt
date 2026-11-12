@@ -127,7 +127,14 @@ key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 
 [s3rt key pulse]
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted
-pulsed 5 falling edges -> \d+ new interrupt\(s\), \d+ total \(PASS - the edge reached the ISR\)
+# This line is the whole point of KNOWN-ISSUES #17. The output used to print only
+# the running total read BEFORE the pulse, so it read "0 press(es) counted"
+# followed by a pulse report - which looks like the pulse was not counted. It now
+# prints both the delta and the new total. Without asserting it here, a revert to
+# the old format would pass unnoticed.
+pulsed 5 falling edges -> (\d+) new interrupt\(s\), (\d+) total \(PASS - the edge reached the ISR\)
+~ 1 in 1..40
+~ 2 in 1..200
 
 # Interrupt latency from a GPIO edge to the handler, measured on the chip with
 # the cycle counter. Upper bound: the pin write's own tail is included.
