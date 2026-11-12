@@ -109,6 +109,22 @@ $needsRadio = @('s3wifiscan')
 $needsCreds = @('s3net example.com',
                 's3wifi <ssid> <pass>', 's3wifi <ssid> <pass> #second call')
 
+# `# scope: U|B|E - ...` sits directly under its [section] header. It is read in a
+# second pass because the main loop assigns sections as it goes: reading the
+# annotation inline would attribute it to the *next* section, which is exactly the
+# off-by-one that made the first listing show [?] for the first section and every
+# other one shifted by one.
+$scopes = @{}
+$pendingSection = $null
+foreach ($line in Get-Content $expectFile) {
+    $t = $line.Trim()
+    if ($t -match '^\[!?(.+)\]$') { $pendingSection = $Matches[1]; continue }
+    if ($pendingSection -and $t -match '^#\s*scope:\s*([UBE])\b') {
+        $scopes[$pendingSection] = $Matches[1]
+        $pendingSection = $null
+    }
+}
+
 if ($List) {
     Write-Host ""
     Write-Host "sections in $expectFile`:"
@@ -116,8 +132,15 @@ if ($List) {
         $mark = if (-not $WifiSsid -and ($needsCreds -contains $k)) { '  (needs -WifiSsid)' }
                 elseif ($needsRadio -contains $k) { '  (needs an AP in range)' }
                 else { '' }
-        Write-Host ("  {0,-20} {1,2} pattern(s){2}" -f $k, $sections[$k].Count, $mark)
+        $sc = if ($scopes[$k]) { $scopes[$k] } else { '?' }
+        Write-Host ("  [{0}] {1,-20} {2,2} pattern(s){3}" -f $sc, $k, $sections[$k].Count, $mark)
     }
+    Write-Host ""
+    $nu = ($scopes.Values | Where-Object { $_ -eq 'U' }).Count
+    $nb = ($scopes.Values | Where-Object { $_ -eq 'B' }).Count
+    $ne = ($scopes.Values | Where-Object { $_ -eq 'E' }).Count
+    Write-Host "  scope: [U] $nu any ESP32-S3, [B] $nb board-specific, [E] $ne environment"
+    Write-Host "  A [B] or [E] failure is not automatically a defect; a [U] failure is."
     Write-Host ""
     exit 0
 }

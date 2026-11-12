@@ -85,8 +85,37 @@
 # Every bound below comes from repeated measurement on this board, recorded in
 # the section's own doc page. Do not widen one to make a test pass; find out why
 # the number moved.
+#
+# ---------------------------------------------------------------- scope ------
+#
+# Every section carries a "# scope:" line saying what a failure there means. This
+# port has only ever been run on one board, so "the assertion failed" and "your
+# board is different" are not the same statement, and a reader on another board
+# needs to be able to tell them apart without reading the source.
+#
+#   U - expected on any ESP32-S3
+#       Kernel counters, scheduler behaviour, watchdog, BLE GATT handles, error
+#       paths for missing files and missing leases. A failure here is a defect.
+#
+#   B - tied to this board's pins, partition or measured numbers
+#       LED on GPIO48, I2C0 on GPIO8/9, the 1 MB storage partition, the exact
+#       heap figures, the cycle and microsecond measurements. A failure here can
+#       be a defect OR a different board; check the pin and the partition first.
+#
+#   E - depends on the environment
+#       Whether an AP is in range, whether there is internet, whether a jumper
+#       is fitted, what devices answer on the bus. A failure here is usually the
+#       room, not the firmware.
+#
+# Counted: 17 U, 25 B, 8 E.
+#
+# The split is not a claim that the B sections are untrustworthy - they are the
+# most informative ones on the board they were measured on. It is a claim about
+# what a red result means, which is the question a new reader actually has.
 
 [s3rt]
+# scope: U - expected on any ESP32-S3
+#        kernel counters, thread states, heap total - no pins
 s3rt v\d+\.\d+ - ESP32-S3 / RT-Thread \d+\.\d+\.\d+
   tick      : \d+, \d+ Hz
   current   : \S+ at priority \d+
@@ -96,13 +125,19 @@ heap kernel: \d+ total, \d+ used, \d+ peak
               s3rt pwm, s3rt key, list thread, free, s3heap
 
 [s3rt tick]
+# scope: U - expected on any ESP32-S3
+#        tick rate comes from the kernel config
 tick: \d+ -> \d+ \(delta \d+, expected ~\d+\)
 
 [s3rt irq]
+# scope: U - expected on any ESP32-S3
+#        interrupt entry counter
 uart0 irq : \d+ entries, \d+ overrun\(s\), line unmasked
 \(typing anything bumps the count\)
 
 [s3rt psram]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        8 MB octal PSRAM; a board without PSRAM reports differently
 psram : \d+ bytes detected
 heap pool \d+ total, \d+ free, \d+ largest
 malloc\(largest=\d+\) ok \(free was \d+, \d+ more than that\)
@@ -110,9 +145,13 @@ malloc\(largest\+1\) refused, as it should be
 pattern over 256 KB: OK \(\d+ bad word\(s\)\)
 
 [s3rt led]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        LED on GPIO48, active low
 led   : blinked 5x on GPIO48 \(active-low\), left ON
 
 [s3rt pwm]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        LEDC on GPIO48
 pwm   : ch0 on GPIO48, \d+ ns period \(about \d+ Hz\)
  25%: duty (\d+), expected ~\d+ ok
 ~ 1 in 60000..70000
@@ -123,9 +162,13 @@ pwm   : ch0 on GPIO48, \d+ ns period \(about \d+ Hz\)
         left at 50%; `s3rt led` gives full brightness
 
 [s3rt key]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        BOOT key on GPIO0
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 
 [s3rt key pulse]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        BOOT key on GPIO0
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted
 # This line is the whole point of KNOWN-ISSUES #17. The output used to print only
 # the running total read BEFORE the pulse, so it read "0 press(es) counted"
@@ -145,6 +188,8 @@ pulsed 5 falling edges -> (\d+) new interrupt\(s\), (\d+) total \(PASS - the edg
 # overhead in the measurement, not in the interrupt path, which is why the
 # tighter number is the honest one.
 [s3rt irqlat]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        cycle counts measured here; another board gives other numbers
 irqlat: (\d+)/(\d+) edges, (\d+)\.\.(\d+) cycles = (\d+)\.\.(\d+) us \(mean \d+ us\) at (\d+) MHz
 ~ 1 == 10
 ~ 2 == 10
@@ -153,11 +198,15 @@ irqlat: (\d+)/(\d+) edges, (\d+)\.\.(\d+) cycles = (\d+)\.\.(\d+) us \(mean \d+ 
 ~ 7 == 240
 
 [s3smp]
+# scope: U - expected on any ESP32-S3
+#        two cores, SMP scheduler
 s3smp: CPUS_NR=\d+, this core=\d+
 cpu0: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
 cpu1: switches=\d+ current=\S+ lock_nest=\d+ irq_nest=\d+
 
 [s3heap]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        exact IDF heap figures for this 8 MB / 512 KB DRAM layout
 idf heap:
   internal 8-bit :\s+(\d+) free,\s+\d+ largest,\s+\d+ min ever
 ~ 1 in 80000..100000
@@ -168,17 +217,23 @@ idf heap:
   total free     :\s+\d+
 
 [free]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        kernel heap size comes from CONFIG_IDF_RTTHREAD_HEAP_SIZE
 total    : \d+
 used     : \d+
 maximum  : \d+
 available: \d+
 
 [list thread]
+# scope: U - expected on any ESP32-S3
+#        thread listing format
 thread       cpu bind pri  status
 tshell
 tidle0
 tidle1
 [i2cscan]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        depends on what is on the bus - a bare bus prints 0 devices
 i2cscan: probing i2c0 \(\d+ Hz\)
 i2cscan: idle levels SCL\(GPIO\d+\)=\d SDA\(GPIO\d+\)=\d
 i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
@@ -191,6 +246,8 @@ i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
 # cannot reliably catch a 100 kHz bus on this chip - measured 10, 10, 1, 10 at
 # 100 kHz against 9, 9, 9, 9, 9, 9 at 10 kHz.
 [i2cwatch 0 0x50]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        I2C0 on GPIO8/9
 i2cwatch: i2c0 addr 0x50 at (\d+) Hz -> rc=-?\d+ \(\w+\), SCL edges=(\d+), SDA edges=(\d+)
 ~ 1 == 10000
 ~ 2 in 8..12
@@ -202,15 +259,21 @@ i2cwatch: PASS - the bus is being clocked
 # has to follow the address, which is what makes this a check on the bits rather
 # than on the clock.
 [i2cwatch 0 0x55 10000]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        I2C0 on GPIO8/9
 i2cwatch: i2c0 addr 0x55 at 10000 Hz -> rc=-?\d+ \(\w+\), SCL edges=(\d+), SDA edges=(\d+)
 ~ 2 == 10
 i2cwatch: address frame 0xaa has 7 bit transitions, so ~10 SDA edges
 
 [i2cprobe 0x50 8]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        depends on what is on the bus
 i2cprobe: 0x50 x8 on i2c0
 \[ 0\] rc=-?\d+ (ACK|NACK)
 
 [spiloop]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        needs a MOSI-MISO jumper; a bare board fails the loopback
 spiloop: spi0 \d+ bytes, \d+ cycles = ~\d+ us \(expected ~\d+ us at \d+ Hz\)
 spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
 spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
@@ -220,6 +283,8 @@ spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
 # it has to be checked after [spiloop] - not before - because the external run
 # is what proves the matrix was restored afterwards.
 [spiloop internal]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        SPI0 on GPIO12/11/13/10
 spiloop: internal loopback - MISO input wired to the MOSI pad \(GPIO\d+\)
 spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
 spiloop: PASS - output came back through the input unchanged \(internal loopback\)
@@ -227,19 +292,27 @@ spiloop: MISO input restored to GPIO\d+
 
 # And the external path again, which must be back to reporting no loopback.
 [spiloop #external after internal]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        jumper dependent
 spiloop: spi0 tx -> rx: 00 00 00 00 00 00 00 00
 spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
 
 # s3adc refuses to measure a pad that belongs to a peripheral, and says why.
 # GPIO8 is i2c0 SDA; measuring it would report the pull-up, not an input.
 [s3adc 1 7]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        ADC1 channel to GPIO mapping
 s3adc: GPIO8 is the i2c0 SDA pad
 Pass 'force' if that peripheral is idle
 
 [s3adc 1 3]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        ADC1 channel to GPIO mapping
 s3adc: adc1 ch3 \(GPIO\d+\) = \d+ / \d+ \(\d+\.\d% of code range\)
 
 [s3wdt]
+# scope: U - expected on any ESP32-S3
+#        watchdog arm and feed
 s3wdt: armed=\d feeds=\d+ paused=\d timeout=\d+ ms period=\d+ ms
 s3wdt: `s3wdt hang` proves the reset path
 
@@ -255,33 +328,47 @@ s3wdt: `s3wdt hang` proves the reset path
 # watchdog was never wired up.
 
 [!s3wdt hang]
+# scope: U - expected on any ESP32-S3
+#        watchdog reset, by design
 s3wdt: suspending the feeder and spinning; the board must reset in ~\d+ ms
 s3wdt: feeds so far = \d+
 rst:0x7 \(TG0WDT_SYS_RST\)
 has been reset by WDT
 
 [s3fs]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        1 MB storage partition size is from the partition table
 s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
 
 # Directory operations. `s3fs` alone only ever exercised the one file it writes,
 # so nothing could show what else was on the volume - roadmap item 3.
 [s3fs ls]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        depends on the file the previous section wrote
 s3fs ls: /storage
 s3fs ls: (\d+) entry\(ies\)
 ~ 1 in 0..16
 
 [s3fs cat s3fs.txt]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        same file
 s3fs cat
 ABCDEFGHIJ
 
 [s3fs cat NOPE.txt]
+# scope: U - expected on any ESP32-S3
+#        a missing file must fail cleanly
 s3fs cat: cannot open /storage/NOPE.txt \(errno=2\)
 
 [s3fs rm NOPE.txt]
+# scope: U - expected on any ESP32-S3
+#        a missing file must fail cleanly
 s3fs rm: cannot remove /storage/NOPE.txt \(errno=2\)
 
 [s3fs read]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        same file, across a reboot
 s3fs read: PASS, \d+ bytes intact after reboot
 
 # `s3wifi` a second time, immediately after the first. The first call creates
@@ -292,24 +379,36 @@ s3fs read: PASS, \d+ bytes intact after reboot
 
 # After [s3fs read], never before: this deletes the file that section checks for.
 [s3fs rm s3fs.txt]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        same file
 s3fs rm: removed /storage/s3fs.txt
 
 # Both error paths return a message and a non-zero exit instead of crashing.
 
 [s3fs unmount]
+# scope: U - expected on any ESP32-S3
+#        unmount reports success
 s3fs unmount
 
 [s3fs erase]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        1 MB partition
 s3fs: erasing \d+ bytes at 0x[0-9a-f]+
 s3fs: erased; next `s3fs` will format and mount
 
 [s3fs format]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        1 MB partition
 s3fs: formatted storage
 
 [s3fs after erase]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        1 MB partition
 s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 
 [s3fsbench small]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        write counts 152/136 follow from this FAT config; timings vary
 s3fsbench: create 32 small files -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
 ~ 1 == 152
 ~ 2 == 136
@@ -328,6 +427,8 @@ s3fsbench: delete 32 files in (\d+) ms
 ~ 1 in 2500..8000
 
 [s3fsbench write]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        throughput depends on flash and wear-levelling config
 s3fsbench: FAT on "storage", \d+-byte sectors, \d+-byte clusters
 s3fsbench: volume \d+ KB total, \d+ KB free
 s3fsbench: measure on a freshly formatted volume
@@ -345,10 +446,14 @@ s3fsbench: write  256 KB in (\d+) ms -> (\d+) KB/s
 # `s3net` with no lease must refuse rather than reach lwIP. This runs first,
 # while there is still no IP.
 [s3net example.com #without ip]
+# scope: U - expected on any ESP32-S3
+#        no lease must fail with a message, not an assert
 s3net: no IP yet - run `s3wifi <ssid> <pass>` first
 s3net: command failed
 
 [s3ble]
+# scope: U - expected on any ESP32-S3
+#        controller bring-up and advertising
 s3ble: bringing up the BLE controller on the FreeRTOS shim
   nvs_flash_init               ok
   nimble_port_init             ok
@@ -366,6 +471,8 @@ s3ble: advertising as "([^"]+)" \(vendor 0x[0-9A-Fa-f]{4} \+ standard DIS 0x[0-9
 # Last of the BLE sections: deinit leaves the stack down, and everything else in
 # this group assumes it is up.
 [s3ble info]
+# scope: U - expected on any ESP32-S3
+#        handle numbers come from the GATT table, not the board
 s3ble info: up=\d synced=\d advertising=\d conns=\d last_disc=\d+ adv_err=\d+
 # Non-zero handles mean NimBLE really registered the characteristics. A zero
 # would mean one service was skipped while ble_gatts_add_svcs() still reported
@@ -374,9 +481,13 @@ s3ble info: handles vendor chr 0x[0-9a-f]{4}/0x[0-9a-f]{4}, dis 0x[0-9a-f]{4}/0x
 
 
 [s3ble deinit]
+# scope: U - expected on any ESP32-S3
+#        clean shutdown
 s3ble deinit: PASS, stack down
 
 [s3wifi <ssid> <pass>]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        needs a real access point
 s3wifi: bringing up esp_wifi on the FreeRTOS shim
   nvs_flash_init             ok
   esp_netif_init             ok
@@ -391,6 +502,8 @@ s3wifi: ip \d+\.\d+\.\d+\.\d+ mask \d+\.\d+\.\d+\.\d+ gw \d+\.\d+\.\d+\.\d+
 
 
 [s3wifi <ssid> <pass> #second call]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        needs a real access point
 s3wifi: bringing up esp_wifi on the FreeRTOS shim
   create default wifi sta\s+ok \(already created\)
   esp_wifi_init              ok
@@ -398,11 +511,15 @@ s3wifi: already connected to
 s3wifi: PASS \(already connected\)
 
 [s3wifiscan]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        needs at least one 2.4 GHz AP in range
 s3wifiscan: scanning \(2\.4 GHz only - the S3 has no 5 GHz radio\)
 # ch  rssi  bssid              ssid
 s3wifiscan: \d+ AP\(s\), all on channels 1\.\.14 = the 2\.4 GHz band
 
 [s3net example.com]
+# scope: E - depends on the environment (AP, network, jumpers, bus devices)
+#        needs internet access
 s3net: resolving example.com
   gethostbyname          ok -> \d+\.\d+\.\d+\.\d+
   socket                 ok \(\d+\)
@@ -412,23 +529,33 @@ s3net: resolving example.com
 s3net: PASS, \d+ byte\(s\) received over TCP
 
 [s3ulpw]
+# scope: U - expected on any ESP32-S3
+#        co-processor handshake
 s3ulpw: worker started; `list thread` should show it in suspend between kicks
 
 [s3ulpw stop]
+# scope: U - expected on any ESP32-S3
+#        co-processor stop
 s3ulpw: worker stopped after \d+ kicks, last result 0x[0-9a-f]+
 
 [s3ulp]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        latency figures measured on this board
 s3ulp: submitting CMD_COUNT, blocking
 s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
 ~ 1 in 100..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 
 [s3ulp after radios]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        latency after Wi-Fi has been up
 s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
 ~ 1 in 50..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 
 [s3ulp stop]
+# scope: U - expected on any ESP32-S3
+#        co-processor stop
 s3ulp: PASS, halted - no completions in \d+ ms \(total \d+\)
 
 # ULP again, with both radios up. KNOWN-ISSUES 2b records that the single-core

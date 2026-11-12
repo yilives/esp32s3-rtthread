@@ -250,6 +250,42 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
+## `check-docs.ps1` 的 scope 分类
+
+50 节里每一节在 `expected-output.txt` 中带一行 `# scope:`：
+
+| 标记 | 含义 | 数量 |
+| --- | --- | --- |
+| `[U]` | **任何 ESP32-S3 都应成立** | 17 |
+| `[B]` | 绑定这块板子的引脚、分区或实测数字 | 25 |
+| `[E]` | 依赖环境（AP、网络、跳线、总线器件） | 8 |
+
+```powershell
+.\tools\check-docs.ps1 -List
+  [U] s3rt                  7 pattern(s)
+  [B] s3rt psram            5 pattern(s)
+  ...
+  scope: [U] 17 any ESP32-S3, [B] 25 board-specific, [E] 8 environment
+  A [B] or [E] failure is not automatically a defect; a [U] failure is.
+```
+
+### 为什么需要它
+
+**这个移植只在一块板子上跑过。** "断言失败"和"你的板子和我不一样"是两句不同的
+话，换块板子的人需要能分辨——而这件事只能靠逐节标注，不能靠跑一次就知道。
+
+`[U]` 那 17 节是内核计数器、调度器行为、看门狗、BLE GATT handle、缺文件/无租约
+的错误路径。**这些失败就是缺陷。**
+
+`[B]` 那 25 节是 GPIO48 的 LED、GPIO8/9 的 I2C、1 MB 分区、精确堆数字、周期和
+微秒测量。**这些失败可能是缺陷，也可能是板子不同**——先查引脚和分区表。
+
+`[E]` 那 8 节取决于房间里有没有 AP、能不能出网、有没有插跳线。**这些失败通常是
+环境问题，不是固件问题。**
+
+分类不是说 `[B]` 的那些不可信——它们在这块板子上是最有信息量的。它说的是
+**一个红色结果意味着什么**，那才是新读者真正关心的问题。
+
 ## `verify-doc-links.ps1`：断链检查
 
 ```powershell
