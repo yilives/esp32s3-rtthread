@@ -468,6 +468,16 @@ static int cmd_s3ulp(int argc, char **argv)
                        "ULP program never executed\n",
                        (unsigned)ulp_s3ulp_magic,
                        (unsigned)S3ULP_MAGIC_EXPECT);
+            /*
+             * QEMU is the overwhelmingly likely reason for this on a machine
+             * without a board, and it is not a defect: qemu-system-xtensa does
+             * not model the ULP-RISC-V co-processor, so ulp_riscv_run() returns
+             * success and nothing ever writes the magic. Say so rather than
+             * leaving the reader to work it out - this exact failure is the
+             * expected result of the documented QEMU flow.
+             */
+            rt_kprintf("s3ulp: if this is under QEMU, that is expected - "
+                       "qemu-system-xtensa does not emulate ULP-RISC-V\n");
             return -1;
         }
     }

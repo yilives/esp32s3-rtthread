@@ -389,6 +389,20 @@ i2cscan: 0 device(s) on i2c0, 0 flaky, 112 timeout(s)
 | `spiloop` | 读回全零 |
 | `s3adc` | 悬空读数 |
 | `s3rt led` / `pwm` / `key` | 无输出可观测 |
+| `s3ulp` | **明确 FAIL**：100 ms 后报 `magic 0x0 != 0x55334c50`，并附一句说明这是 QEMU 下预期结果 |
+| `s3wifi` | **静默挂起**：走到 `phy_init` 的"full calibration"就停住，300 秒超时也不继续 |
+| `s3ble` | **静默挂起**：打完 `bringing up the BLE controller` 一行就卡住，后续命令也不响应 |
+
+三者的失败模式差别很大，值得分别记住：
+
+- **`s3ulp` 是正确的那种**：QEMU 不模拟 ULP-RISC-V，程序从没执行，命令在 100 ms
+  内如实报告，还提示了原因。
+- **`s3wifi` 和 `s3ble` 是静默挂起**：它们需要真实射频，PHY 全校准和控制器初始化
+  都会等一个永远不会到来的硬件事件。这种失败方式对使用者不友好——看起来像死机，
+  而不是"这个功能在模拟器上不可用"。
+
+`qemu-system-xtensa` 不模拟 WiFi/BT 射频，也不模拟 ULP-RISC-V 协处理器。这不是
+移植的缺陷。
 
 > **坑**：构建失败时 `qemu.ps1` 会静默跑上一次的镜像。
 > 每次都确认 `.elf` / `.bin` 的时间戳是新的。
