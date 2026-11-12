@@ -407,6 +407,17 @@ s3fs read: PASS, \d+ bytes intact after reboot
 # order: after s3fs read
 s3fs rm: removed /storage/s3fs.txt
 
+# `removed` is the command reporting on itself. Read the volume back and check the
+# file is actually gone - otherwise a rename, a no-op or a wrong path would all
+# print the same line. This is the same idea as i2cwatch: a driver that never
+# transmits also reports "0 devices", so the report has to be corroborated.
+[s3fs ls #after rm]
+# scope: B - tied to this board's pins, partition or measured numbers
+#        listing the volume after the only file was deleted
+# order: after s3fs rm s3fs.txt
+s3fs ls: /storage
+s3fs ls: 0 entry\(ies\)
+
 # Both error paths return a message and a non-zero exit instead of crashing.
 
 [s3fs unmount]
@@ -515,6 +526,17 @@ s3ble info: handles vendor chr 0x[0-9a-f]{4}/0x[0-9a-f]{4}, dis 0x[0-9a-f]{4}/0x
 # order: after s3ble info
 s3ble deinit: PASS, stack down
 
+# `stack down` is the command's own verdict. Ask the stack: after a deinit the
+# controller must report itself down, unsynced and not advertising. The handle
+# numbers stay non-zero because the GATT table was registered earlier and is not
+# torn down with the controller - which is worth asserting, since a zero there
+# would mean deinit over-reached.
+[s3ble info #after deinit]
+# scope: U - expected on any ESP32-S3
+#        the stack reporting on itself after it was torn down
+# order: after s3ble deinit
+s3ble info: up=0 synced=0 advertising=0 conns=0 last_disc=\d+ adv_err=\d+
+
 [s3wifi <ssid> <pass>]
 # scope: E - depends on the environment (AP, network, jumpers, bus devices)
 #        needs a real access point
@@ -589,6 +611,15 @@ s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 # scope: U - expected on any ESP32-S3
 #        co-processor stop
 s3ulp: PASS, halted - no completions in \d+ ms \(total \d+\)
+
+# `halted` is the stop command's own report. Ask again: a stopped co-processor
+# must answer "not running" rather than repeating the same verdict. Without this,
+# a stop that printed the right line and changed nothing would pass.
+[s3ulp stop #again]
+# scope: U - expected on any ESP32-S3
+#        stopping something already stopped
+# order: after s3ulp stop
+s3ulp: not running
 
 # ULP again, with both radios up. KNOWN-ISSUES 2b records that the single-core
 # build cannot do this at all; the dual-core build is supposed to, and until now

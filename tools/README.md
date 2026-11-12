@@ -250,6 +250,40 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
+## `check-docs.ps1` 的"读回验证"
+
+有些命令的断言只验证**自我报告**：`s3fs rm` 打印 `removed`，`s3ble deinit` 打印
+`stack down`，`s3ulp stop` 打印 `halted`。**这些话本身就是命令自己说的。**
+
+一个什么都没删的 `rm` 也会打印 `removed`。一个把路径拼错的 `rm` 也会。所以
+`removed` 不能证明文件没了——得**读回来确认**。
+
+现在有三处这样做：
+
+| 命令 | 自我报告 | 读回验证 |
+| --- | --- | --- |
+| `s3fs rm s3fs.txt` | `removed` | `s3fs ls #after rm` → `0 entry(ies)` |
+| `s3ble deinit` | `PASS, stack down` | `s3ble info #after deinit` → `up=0 synced=0 advertising=0` |
+| `s3ulp stop` | `PASS, halted` | `s3ulp stop #again` → `not running` |
+
+节名里的 `#` 是说明，不是命令：驱动会 `name.split(' #')[0]` 再发送。
+
+### 一个细节
+
+`s3ble info #after deinit` 断言了 `up=0 synced=0 advertising=0`，但**没有**断言
+handle 归零——因为 GATT 表是之前注册的，不随控制器一起拆。handle 保持非零是对的；
+如果它归零反而说明 `deinit` 拆过头了。**断言什么不要断言什么，本身就是一条规格。**
+
+### 为什么不是所有命令都能这样
+
+读回需要一个**能查询状态**的通道：
+
+- `s3fs` 有 `ls` ✔
+- `s3ble` 有 `info` ✔
+- `s3ulp` 没有 `info`，但 `stop` 幂等（第二次报 `not running`）✔
+- `s3rt led` / `pwm` **没有**——这一层没有"现在灯多亮"的查询通道，只能靠 duty 寄存器
+  间接推断，那已经在 `s3rt pwm` 里做了
+
 ## `check-docs.ps1` 的元数据校验
 
 `expected-output.txt` 的每节头部带两种**被代码读取**的声明：

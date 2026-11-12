@@ -1804,6 +1804,49 @@ $needsCreds = @{ 's3net example.com' = $true }     # <- 定义了，从没用过
 
 ---
 
+## 35. 三处断言只验证了命令的自我报告
+
+### 问题
+
+`s3fs rm` 打印 `removed`，`s3ble deinit` 打印 `PASS, stack down`，`s3ulp stop` 打印
+`PASS, halted`。**这三句话都是命令在说自己做了什么。**
+
+一个什么都没删的 `rm` 也会打印 `removed`。一个路径拼错但文件恰好不存在的 `rm` 也会。
+所以"删掉了"这句话不能证明文件没了。
+
+### 修法：读回来
+
+| 命令 | 自我报告 | 新增的读回节 |
+| --- | --- | --- |
+| `s3fs rm s3fs.txt` | `removed` | `s3fs ls #after rm` → `0 entry(ies)` |
+| `s3ble deinit` | `PASS, stack down` | `s3ble info #after deinit` → `up=0 synced=0 advertising=0` |
+| `s3ulp stop` | `PASS, halted` | `s3ulp stop #again` → `not running` |
+
+节名里的 `#` 是注释标记，驱动会剥掉再发送——这个机制本来就有。
+
+### 一个意外收获：BLE 的 handle 应该保持非零
+
+写 `s3ble info #after deinit` 时我在想"要不要断言 handle 归零"。查了代码才确定
+**不该**：GATT 表是在 `deinit` 之前注册的，不随控制器一起拆。handle 保持非零是对的，
+**如果它归零反而说明 `deinit` 拆过头了**。
+
+所以那一节断言 `up=0 synced=0 advertising=0`，故意不断言 handle。**断言什么、不断言
+什么，本身就是一条规格。**
+
+### 为什么不是所有命令都能这样
+
+读回需要一个能查询状态的通道：
+
+- `s3fs` 有 `ls` ✔
+- `s3ble` 有 `info` ✔
+- `s3ulp` 没有 `info`，但 `stop` 是幂等的（第二次报 `not running`）✔
+- `s3rt led` / `pwm` **没有**状态查询通道，只能靠 duty 寄存器间接推断——那已经在
+  `s3rt pwm` 的三点扫描里做了
+
+**能做读回的地方都做了，做不到的地方有明确原因。**
+
+---
+
 ## 已修条目的回归覆盖
 
 读者会问："你说修了，我怎么知道？"这张表回答它。
@@ -1876,3 +1919,4 @@ $needsCreds = @{ 's3net example.com' = $true }     # <- 定义了，从没用过
 | 32 | 无凭据时 `s3wifiscan` 被错误跳过；`$needsCreds` 定义了没用 | 中 | 已修：拆 needsRadio / needsCreds，跳过只看凭据 |
 | 33 | 顺序约束只在注释里，违反要跑 40 分钟才发现 | 中 | 已修：`# order:` 声明 + 解析时校验，10 条约束 |
 | 34 | 声明式元数据写错时静默降级 | 中 | 已修：四项完整性校验，四项负向测试 |
+| 35 | 三处断言只验证自我报告 | 中 | 已加读回节：`ls` / `info` / 幂等 `stop` |
