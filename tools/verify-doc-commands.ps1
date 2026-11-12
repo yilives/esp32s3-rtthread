@@ -1,4 +1,4 @@
-﻿# Compare the commands the firmware exports against the ones the docs claim.
+# Compare the commands the firmware exports against the ones the docs claim.
 #
 # Why: the roadmap claimed "BLE then Wi-Fi is broken, in progress" for several
 # versions after it had been fixed. Prose does not fail to compile, so nothing
