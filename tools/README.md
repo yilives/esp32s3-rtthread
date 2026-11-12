@@ -250,6 +250,38 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
+## `check-docs.ps1` 失败时给什么
+
+失败报告的目标是**让人自己定位问题**，而不是只知道"有一条没过去"。
+
+```
+FAIL  s3rt pwm             1 of 5 pattern(s) missing
+missing: [2/5] 25%: duty (\d+), expected ~\d+ ok   (group 1 is 65536, outside 1..2; matched: 25%: duty 65536, expected ~65525 ok)
+```
+
+三处信息：
+
+| 部分 | 作用 |
+| --- | --- |
+| `[2/5]` | 是这一节 5 个 pattern 里的第 2 个 |
+| `matched: ...` | 约束失败时，实际匹配到的那一整行长什么样 |
+| `closest line on the board: ...` | pattern 完全没匹配时，板上最接近的那一行 |
+
+### `closest line` 怎么选
+
+把 pattern 的正则元字符换成空格得到"骨架"，再和每一行算字符串相似度
+（`difflib.SequenceMatcher`），取最高的那个。相似度低于 0.6 就不显示——**宁可不给，
+也不要给一条误导的行。**
+
+实测：把 `entry\(ies\)` 故意写成 `entries`（板上打的是 `entry(ies)`）：
+
+```
+missing: [2/2] s3fs ls: (\d+) entries   (closest line on the board: s3fs ls: 1 entry(ies))
+```
+
+**一眼就能看出差别在哪。** 没有这一行的话，读者只知道"这个正则不匹配"，然后要去
+翻整套输出。
+
 ## `check-docs.ps1` 的"读回验证"
 
 有些命令的断言只验证**自我报告**：`s3fs rm` 打印 `removed`，`s3ble deinit` 打印

@@ -351,6 +351,7 @@ $json = $payload | ConvertTo-Json -Depth 6 -Compress
 $json | Set-Content (Join-Path $env:TEMP 's3-check-docs.json') -Encoding utf8
 
 $pySource = @'
+import difflib
 import json, io, os, re, sys, time
 import serial
 
@@ -496,40 +497,71 @@ for name, spec in CFG["sections"].items():
         print("=== %s ===\n%s" % (name, out))
 
     missing = []
-    for spec in patterns:
+    for pi, spec in enumerate(patterns, 1):
         p = spec["pattern"]
         cons = spec.get("constraints") or []
         try:
             m = re.search(p, out)
         except re.error as e:
-            missing.append("%s   (BAD REGEX: %s)" % (p, e))
+            missing.append("[%d/%d] %s   (BAD REGEX: %s)" % (pi, len(patterns), p, e))
             continue
         if not m:
-            missing.append(p)
+            # When a pattern does not match at all, the useful question is "what
+            # is on the board instead". Pick the captured line closest to the
+            # pattern's literal skeleton and show it. Measured on a deliberate
+            # rename of "entry(ies)" to "entries": the right line wins at 0.89
+            # against 0.40 for the next candidate.
+            note = ""
+            try:
+                skel = re.sub(r"\\[a-z]|[\\^$.*+?()\[\]{}|]", " ", p)
+                skel = re.sub(r"\s+", " ", skel).strip()
+                best, score = "", 0.0
+                if skel:
+                    for cand in out.split("\n"):
+                        cand = cand.strip()
+                        if not cand:
+                            continue
+                        r = difflib.SequenceMatcher(None, skel, cand).ratio()
+                        if r > score:
+                            best, score = cand, r
+                if score >= 0.6:
+                    note = "   (closest line on the board: %s)" % best[:120]
+            except Exception:
+                pass
+            missing.append("[%d/%d] %s%s" % (pi, len(patterns), p, note))
             continue
 
         # "N in LO..HI" or "N == VALUE". N is a capture group number; 0 is the
         # whole match.
         for con in cons:
             cm = re.match(r"^(\d+)\s+(in\s+(-?\d+)\.\.(-?\d+)|==\s*(-?\d+))$", con)
+            # Show what the pattern actually matched alongside any complaint.
+            # "group 5 is 196608, outside 60000..70000" says the number is wrong;
+            # the matched line says WHICH LINE produced it, which is the part a
+            # reader needs when several lines in one section look alike.
+            hit = m.group(0).replace("\n", " | ")[:120]
+            tag = "[%d/%d] %s" % (pi, len(patterns), p)
             if not cm:
-                missing.append("%s   (BAD CONSTRAINT: %s)" % (p, con))
+                missing.append("%s   (BAD CONSTRAINT: %s)" % (tag, con))
                 continue
             try:
                 gi = int(cm.group(1))
                 got = int(m.group(gi))
             except (IndexError, ValueError):
-                missing.append("%s   (group %s is not an integer)" % (p, cm.group(1)))
+                missing.append("%s   (group %s is not an integer; matched: %s)"
+                               % (tag, cm.group(1), hit))
                 continue
 
             if cm.group(5) is not None:
                 want = int(cm.group(5))
                 if got != want:
-                    missing.append("%s   (group %d is %d, expected %d)" % (p, gi, got, want))
+                    missing.append("%s   (group %d is %d, expected %d; matched: %s)"
+                                   % (tag, gi, got, want, hit))
             else:
                 lo, hi = int(cm.group(3)), int(cm.group(4))
                 if not (lo <= got <= hi):
-                    missing.append("%s   (group %d is %d, outside %d..%d)" % (p, gi, got, lo, hi))
+                    missing.append("%s   (group %d is %d, outside %d..%d; matched: %s)"
+                                   % (tag, gi, got, lo, hi, hit))
 
     if read_error is not None:
         missing = missing + ["SERIAL READ FAILED: %s" % read_error]
