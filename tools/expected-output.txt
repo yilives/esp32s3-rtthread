@@ -167,10 +167,20 @@ i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
 # cannot reliably catch a 100 kHz bus on this chip - measured 10, 10, 1, 10 at
 # 100 kHz against 9, 9, 9, 9, 9, 9 at 10 kHz.
 [i2cwatch 0 0x50]
-i2cwatch: i2c0 addr 0x50 at (\d+) Hz -> rc=-?\d+ \(\w+\), SCL\(GPIO\d+\) edges=(\d+)
+i2cwatch: i2c0 addr 0x50 at (\d+) Hz -> rc=-?\d+ \(\w+\), SCL edges=(\d+), SDA edges=(\d+)
 ~ 1 == 10000
 ~ 2 in 8..12
+i2cwatch: address frame 0xa0 has 3 bit transitions, so ~6 SDA edges
 i2cwatch: PASS - the bus is being clocked
+
+# A different address, chosen because its bit pattern has the most transitions
+# of any in the scan range: 0xAA is 10101010, seven of them. The SDA edge count
+# has to follow the address, which is what makes this a check on the bits rather
+# than on the clock.
+[i2cwatch 0 0x55 10000]
+i2cwatch: i2c0 addr 0x55 at 10000 Hz -> rc=-?\d+ \(\w+\), SCL edges=(\d+), SDA edges=(\d+)
+~ 2 == 10
+i2cwatch: address frame 0xaa has 7 bit transitions, so ~10 SDA edges
 
 [i2cprobe 0x50 8]
 i2cprobe: 0x50 x8 on i2c0
