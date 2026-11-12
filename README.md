@@ -122,13 +122,27 @@ s3rt v0.1 - ESP32-S3 / RT-Thread 5.4.0
   current   : tshell at priority 20
   counters  : a=36 b=71
   heap kernel: 130976 total, 28816 used, 32640 peak
-  commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free
+  commands  : s3rt tick, s3rt irq, s3rt irqlat, s3rt psram, s3rt led,
+              s3rt pwm, s3rt key, list thread, free, s3heap
 
 msh >s3smp
 s3smp: CPUS_NR=2, this core=1
   cpu0: switches=103 current=tidle0 lock_nest=0 irq_nest=1
   cpu1: switches=335 current=tshell lock_nest=0 irq_nest=0
 ```
+
+**或者让脚本自动核对全部输出**——`tools/check-docs.ps1` 会按顺序跑 50 个命令，
+逐条比对文档里承诺的输出：
+
+```powershell
+# 只有板子：跑 47 节，跳过需要 WiFi 凭据的 3 节
+.\tools\check-docs.ps1 -Port COM7
+
+# 有 WiFi 环境：跑全部 50 节
+.\tools\check-docs.ps1 -Port COM7 -WifiSsid <ssid> -WifiPass <pass>
+```
+
+端口改成你自己的。`-List` 会列出所有节以及哪些需要凭据。
 
 `irq_nest` 是瞬时值：打印那一刻该核正在处理几层中断。撞上 tick 中断时就是 1，
 这是正常的；持续大于 1 才是问题。`lock_nest` 必须为 0。

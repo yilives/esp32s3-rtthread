@@ -91,19 +91,31 @@ foreach ($line in Get-Content $expectFile) {
     [void]$sections[$current].Add(@{ pattern = $t; constraints = @() })
 }
 
-# A section that needs credentials is skipped unless they were supplied; its
-# patterns cannot match without them.
-# Sections whose command needs credentials. Matched exactly, so the section
-# with placeholders in its name has to be listed in that form.
-$needsWifi = @('s3wifiscan', 's3net example.com',
-               's3wifi <ssid> <pass>', 's3wifi <ssid> <pass> #second call')
-$needsCreds = @{ 's3net example.com' = $true }
+# Two different requirements, and conflating them meant hiding a section from the
+# reader most likely to want it.
+#
+#   needsRadio  - the section needs a 2.4 GHz access point somewhere in range.
+#                 `s3wifiscan` is the only one, and it takes no arguments: it will
+#                 scan and report whatever it finds.
+#   needsCreds  - the section actually types an SSID and a password, or needs to
+#                 reach the internet through an association.
+#
+# The skip below used to test needsRadio, so a reader with no WiFi credentials -
+# exactly the person checking that scanning works - had `s3wifiscan` silently
+# dropped from the run with only a "(needs -WifiSsid)" note to explain it.
+# Measured: `s3wifiscan` is `RT_UNUSED(argc)` and succeeds on any board with an AP
+# in range.
+$needsRadio = @('s3wifiscan')
+$needsCreds = @('s3net example.com',
+                's3wifi <ssid> <pass>', 's3wifi <ssid> <pass> #second call')
 
 if ($List) {
     Write-Host ""
     Write-Host "sections in $expectFile`:"
     foreach ($k in $sections.Keys) {
-        $mark = if ($needsWifi -contains $k) { '  (needs -WifiSsid)' } else { '' }
+        $mark = if (-not $WifiSsid -and ($needsCreds -contains $k)) { '  (needs -WifiSsid)' }
+                elseif ($needsRadio -contains $k) { '  (needs an AP in range)' }
+                else { '' }
         Write-Host ("  {0,-20} {1,2} pattern(s){2}" -f $k, $sections[$k].Count, $mark)
     }
     Write-Host ""
@@ -124,7 +136,9 @@ foreach ($o in $Only) {
 $selected = @()
 foreach ($k in $sections.Keys) {
     if ($onlyList.Count -gt 0 -and $onlyList -notcontains $k) { continue }
-    if ($needsWifi -contains $k -and -not $WifiSsid) { continue }
+    # Only credentials can be supplied from here. An AP in range cannot, so a
+    # radio-only section always runs and reports what it sees.
+    if ($needsCreds -contains $k -and -not $WifiSsid) { continue }
     $selected += $k
 }
 

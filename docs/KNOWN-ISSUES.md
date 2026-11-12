@@ -1664,6 +1664,54 @@ Project build complete. To flash, run:
 
 ---
 
+## 32. `check-docs.ps1` 把不需要凭据的 `s3wifiscan` 也跳过了
+
+### 问题
+
+检查器有 `needsWifi` 这个列表，决定"没有 `-WifiSsid` 时跳过哪些节"：
+
+```powershell
+$needsWifi = @('s3wifiscan', 's3net example.com',
+               's3wifi <ssid> <pass>', 's3wifi <ssid> <pass> #second call')
+$needsCreds = @{ 's3net example.com' = $true }     # <- 定义了，从没用过
+```
+
+**`s3wifiscan` 根本不需要凭据。** 它不接参数（源码里是
+`RT_UNUSED(argc)`），只是扫描一遍报告看到什么。它唯一的要求是**附近有个
+2.4 GHz AP**——而这恰恰是"我有一个板子但没有 WiFi 环境"的人想验证的东西。
+
+结果那个人跑 `check-docs.ps1`，`s3wifiscan` 被**静默跳过**，只在 `-List` 里有个
+`(needs -WifiSsid)` 的标注——而那个标注是错误的。
+
+### 更糟的细节
+
+`$needsCreds` 这个更精确的表**在第 127 行的判断里从未被使用**。它被定义、被命名，
+然后没人用。跳过判断用的是 `$needsWifi`。
+
+### 修法
+
+拆成两个概念：
+
+| 变量 | 含义 | 内容 |
+| --- | --- | --- |
+| `$needsRadio` | 需要附近有 2.4 GHz AP | `s3wifiscan` |
+| `$needsCreds` | 需要输入 SSID / 密码，或需要出网 | `s3net example.com`、两个 `s3wifi` |
+
+跳过判断改用 `$needsCreds`——因为**只有凭据是能从命令行提供的，AP 不是**。附近
+有没有 AP 是环境事实，跳过它并不能让检查通过，只会让人看不见结果。
+
+### 验证
+
+```
+带凭据  : RESULT: PASS - all 50 section(s) matched
+不带凭据: RESULT: PASS - all 47 section(s) matched     <- 含 s3wifiscan
+```
+
+差的三节是 `s3net example.com` 和两个 `s3wifi`。**`s3wifiscan` 在不带凭据时也会跑
+并报告它扫到的 AP 数。**
+
+---
+
 ## 已修条目的回归覆盖
 
 读者会问："你说修了，我怎么知道？"这张表回答它。
@@ -1733,3 +1781,4 @@ Project build complete. To flash, run:
 | 29 | 排障文档三条指引过时，一条完全相反 | **高** | 已修：无线顺序、写小文件数字、工具链查找方式 |
 | 30 | "优化后"取了最快值；文档间重复且算术不自洽 | 中 | 已修：标注时间不可靠、修正算术、取消重复 |
 | 31 | README 缺"上游要放同级目录"；首次构建有误导性 fatal | 中 | 已修：README/BUILD 补说明，build.ps1 主动提示 |
+| 32 | 无凭据时 `s3wifiscan` 被错误跳过；`$needsCreds` 定义了没用 | 中 | 已修：拆 needsRadio / needsCreds，跳过只看凭据 |

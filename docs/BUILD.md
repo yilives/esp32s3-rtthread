@@ -378,6 +378,31 @@ Remove-Item .\project\s3-rtt-test\build -Recurse -Force -ErrorAction SilentlyCon
 ## 5c. 核对文档输出（有板子时）
 
 ```powershell
+.\tools\check-docs.ps1 -Port COM7
+```
+
+**不带 WiFi 凭据也能跑**，会跑 47 节：
+
+```powershell
+# 只有板子，没有 WiFi 环境
+.\tools\check-docs.ps1 -Port COM7
+  -> RESULT: PASS - all 47 section(s) matched
+```
+
+跳过的三节是 `s3net example.com` 和两个 `s3wifi`——它们要真网络。
+
+**`s3wifiscan` 不在跳过之列**，即使没有凭据：它不接受参数，只需要附近有个
+2.4 GHz AP。想连这一步也跳过就用 `-Only` 挑节。
+
+```powershell
+# 有 WiFi 环境，跑全部 50 节
+.\tools\check-docs.ps1 -Port COM7 -WifiSsid <ssid> -WifiPass <pass>
+  -> RESULT: PASS - all 50 section(s) matched
+```
+
+### 下面的内容（逐节说明）
+
+```powershell
 .\tools\check-docs.ps1 -WifiSsid <ssid> -WifiPass <pass>
 ```
 
