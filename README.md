@@ -227,6 +227,7 @@ xtensa-esp32s3-elf-gdb .\project\s3-rtt-test\build-qemu\s3_rtt_test.elf
 | 能力 | 状态 | 验证命令 |
 | --- | --- | --- |
 | FAT 文件系统（`storage` 分区，1 MB） | ✅ | `s3fs` |
+| 目录操作（列 / 读 / 删） | ✅ | `s3fs ls` / `cat` / `rm` |
 | 跨重启持久 | ✅ | `s3fs read` |
 | 掉电保护（信任引导签名） | ✅ | 见 `docs/FILESYSTEM.md` |
 | 性能基准 | ✅ | `s3fsbench` |

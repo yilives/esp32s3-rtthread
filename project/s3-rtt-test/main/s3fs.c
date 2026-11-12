@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+/* opendir / readdir, from the IDF VFS (components/vfs/linux_include). */
+#include <dirent.h>
 
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
@@ -61,6 +63,9 @@
  * measured rather than guessed.
  */
 #define S3FS_MAX_FILES      8
+
+/* How much `s3fs cat` will print before truncating. */
+#define S3FS_CAT_LIMIT      (1024)
 
 static int s3_fs_read_only(void);
 
@@ -318,6 +323,166 @@ static void s3_fs_build_expect(char *expect, rt_size_t n)
     expect[n - 1] = '\0';
 }
 
+/*
+ * `s3fs ls` - list the volume root.
+ *
+ * The volume used to be checked only through the one file this command writes,
+ * so nothing could show what else was on it. Listing needs opendir/readdir,
+ * which come from the IDF VFS rather than from RT-Thread's DFS - DFS is off in
+ * this port, and the VFS layer is what backs fopen() here anyway.
+ *
+ * The size comes from fopen + fseek(END), not from stat(): the VFS does not
+ * expose a POSIX stat, and adding a FatFs-level call would mean reaching past
+ * the layer this file already uses.
+ */
+static int s3_fs_ls(void)
+{
+    DIR *dir;
+    struct dirent *ent;
+    int count = 0;
+
+    dir = opendir(S3FS_MOUNT_POINT);
+    if (dir == RT_NULL)
+    {
+        rt_kprintf("s3fs ls: cannot open %s (errno=%d)\n", S3FS_MOUNT_POINT, errno);
+        return -1;
+    }
+
+    rt_kprintf("s3fs ls: %s\n", S3FS_MOUNT_POINT);
+
+    while ((ent = readdir(dir)) != RT_NULL)
+    {
+        char path[96];
+        FILE *f;
+        long size = -1;
+
+        rt_snprintf(path, sizeof(path), "%s/%s", S3FS_MOUNT_POINT, ent->d_name);
+
+        f = fopen(path, "rb");
+        if (f != RT_NULL)
+        {
+            if (fseek(f, 0, SEEK_END) == 0)
+            {
+                size = ftell(f);
+            }
+            fclose(f);
+        }
+
+        if (size >= 0)
+        {
+            rt_kprintf("        %8ld  %s\n", size, ent->d_name);
+        }
+        else
+        {
+            /* A directory, or something ftell could not answer for. */
+            rt_kprintf("        %8s  %s/\n", "<dir>", ent->d_name);
+        }
+        count++;
+    }
+
+    closedir(dir);
+    rt_kprintf("s3fs ls: %d entry(ies)\n", count);
+    return 0;
+}
+
+/* `s3fs cat <name>` - print a file's bytes, bounded so it cannot flood the shell. */
+static int s3_fs_cat(const char *name)
+{
+    char path[96];
+    char buf[129];
+    size_t total = 0;
+    FILE *f;
+
+    if (name == RT_NULL || name[0] == '\0')
+    {
+        rt_kprintf("usage: s3fs cat <name>\n");
+        return -1;
+    }
+
+    /* Accept both "s3fs.txt" and "/storage/s3fs.txt". */
+    if (name[0] == '/')
+    {
+        rt_snprintf(path, sizeof(path), "%s", name);
+    }
+    else
+    {
+        rt_snprintf(path, sizeof(path), "%s/%s", S3FS_MOUNT_POINT, name);
+    }
+
+    f = fopen(path, "rb");
+    if (f == RT_NULL)
+    {
+        rt_kprintf("s3fs cat: cannot open %s (errno=%d)\n", path, errno);
+        return -1;
+    }
+
+    /*
+     * Bounded on purpose: this prints to a 115200 baud console, and an unbounded
+     * dump of a 256 KB file is a minute of scrolling that hides the command
+     * prompt. The truncation is reported rather than silent.
+     */
+    for (;;)
+    {
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+
+        if (n == 0)
+        {
+            break;
+        }
+        buf[n] = '\0';
+        rt_kprintf("%s", buf);
+        total += n;
+
+        if (total >= S3FS_CAT_LIMIT)
+        {
+            rt_kprintf("\n[truncated at %u bytes]\n", (unsigned)total);
+            break;
+        }
+    }
+    fclose(f);
+
+    if (total == 0)
+    {
+        rt_kprintf("s3fs cat: %s is empty\n", path);
+    }
+    else if (total < S3FS_CAT_LIMIT)
+    {
+        rt_kprintf("\n[%u bytes]\n", (unsigned)total);
+    }
+
+    return 0;
+}
+
+/* `s3fs rm <name>` - delete one file. */
+static int s3_fs_rm(const char *name)
+{
+    char path[96];
+
+    if (name == RT_NULL || name[0] == '\0')
+    {
+        rt_kprintf("usage: s3fs rm <name>\n");
+        return -1;
+    }
+
+    if (name[0] == '/')
+    {
+        rt_snprintf(path, sizeof(path), "%s", name);
+    }
+    else
+    {
+        rt_snprintf(path, sizeof(path), "%s/%s", S3FS_MOUNT_POINT, name);
+    }
+
+    if (remove(path) != 0)
+    {
+        rt_kprintf("s3fs rm: cannot remove %s (errno=%d)\n", path, errno);
+        return -1;
+    }
+
+    rt_kprintf("s3fs rm: removed %s\n", path);
+    return 0;
+}
+
 static int cmd_s3fs(int argc, char **argv)
 {
     char path[64];
@@ -346,6 +511,33 @@ static int cmd_s3fs(int argc, char **argv)
      * "no filesystem". Erasing first makes the next mount's format run against
      * clean flash.
      */
+    if (argc >= 2 && rt_strcmp(argv[1], "ls") == 0)
+    {
+        if (s3_fs_mount() != RT_EOK)
+        {
+            return -1;
+        }
+        return s3_fs_ls() == 0 ? 0 : -1;
+    }
+
+    if (argc >= 2 && rt_strcmp(argv[1], "cat") == 0)
+    {
+        if (s3_fs_mount() != RT_EOK)
+        {
+            return -1;
+        }
+        return s3_fs_cat(argc >= 3 ? argv[2] : RT_NULL) == 0 ? 0 : -1;
+    }
+
+    if (argc >= 2 && rt_strcmp(argv[1], "rm") == 0)
+    {
+        if (s3_fs_mount() != RT_EOK)
+        {
+            return -1;
+        }
+        return s3_fs_rm(argc >= 3 ? argv[2] : RT_NULL) == 0 ? 0 : -1;
+    }
+
     if (argc >= 2 && rt_strcmp(argv[1], "erase") == 0)
     {
         const esp_partition_t *part;

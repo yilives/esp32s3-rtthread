@@ -256,6 +256,23 @@ has been reset by WDT
 s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
 
+# Directory operations. `s3fs` alone only ever exercised the one file it writes,
+# so nothing could show what else was on the volume - roadmap item 3.
+[s3fs ls]
+s3fs ls: /storage
+s3fs ls: (\d+) entry\(ies\)
+~ 1 in 0..16
+
+[s3fs cat s3fs.txt]
+s3fs cat
+ABCDEFGHIJ
+
+[s3fs cat NOPE.txt]
+s3fs cat: cannot open /storage/NOPE.txt \(errno=2\)
+
+[s3fs rm NOPE.txt]
+s3fs rm: cannot remove /storage/NOPE.txt \(errno=2\)
+
 [s3fs read]
 s3fs read: PASS, \d+ bytes intact after reboot
 
@@ -264,6 +281,13 @@ s3fs read: PASS, \d+ bytes intact after reboot
 # asserts inside IDF (wifi_default.c:437), so the command detects the existing
 # netif first. It has to sit here - the guard only has anything to find if a
 # station netif already exists.
+
+# After [s3fs read], never before: this deletes the file that section checks for.
+[s3fs rm s3fs.txt]
+s3fs rm: removed /storage/s3fs.txt
+
+# Both error paths return a message and a non-zero exit instead of crashing.
+
 [s3fs unmount]
 s3fs unmount
 

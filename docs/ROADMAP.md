@@ -55,16 +55,33 @@ per-activity 缓冲。压 activity 这条路走不通。
 
 ---
 
-### 3. `s3fs` 加目录操作
+### 3. ~~`s3fs` 加目录操作~~（**已完成**）
 
-现在只能写固定的 `s3fs.txt`。
+`s3fs ls` / `s3fs cat <name>` / `s3fs rm <name>` 已实现，用 IDF VFS 的
+`opendir` / `readdir` / `remove`。
 
-**做法**：加 `s3fs ls` / `s3fs cat <file>` / `s3fs rm <file>`，用 `opendir` /
-`readdir`（IDF VFS 提供）。
+```
+msh >s3fs ls
+s3fs ls: /storage
+     511  s3fs.txt
+s3fs ls: 1 entry(ies)
 
-**验证**：连续创建 10 个文件，`ls` 能列出来。
+msh >s3fs cat s3fs.txt
+ABCDEFGHIJKLMNOPQRSTUVWXYZ...
 
-**风险**：低。
+msh >s3fs rm s3fs.txt
+s3fs rm: removed /storage/s3fs.txt
+```
+
+三个细节：
+
+1. **文件大小来自 `fopen` + `fseek(END) + ftell`，不是 `stat`。** IDF VFS 不暴露
+   POSIX `stat`，而绕到 FatFs 原生的 `f_stat` 会穿过这一层已经在用的抽象。
+2. **`cat` 有 1 KB 上限。** 115200 波特控制台上无界输出是一分钟的滚动，会把提示符
+   冲掉。截断是**报出来**的，不是静默的。
+3. **错误路径都测了**：不存在的文件返回 `errno=2`，缺参数打 usage，都不崩。
+
+检查器里加了 5 节（含两条错误路径）。
 
 ---
 

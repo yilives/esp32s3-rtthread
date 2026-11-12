@@ -282,7 +282,38 @@ s3fsbench: delete 32 files in 3512 ms (109 ms each)
 
 **小文件慢是正常的**，原因和调优见 [FILESYSTEM.md](FILESYSTEM.md)。
 
-### 4.5 擦除分区（Wi-Fi 会先被停掉）
+### 4.5 目录操作
+
+```
+msh >s3fs ls
+s3fs ls: /storage
+     511  s3fs.txt
+s3fs ls: 1 entry(ies)
+
+msh >s3fs cat s3fs.txt
+ABCDEFGHIJKLMNOPQRSTUVWXYZ...
+[511 bytes]
+
+msh >s3fs rm s3fs.txt
+s3fs rm: removed /storage/s3fs.txt
+```
+
+**`cat` 有 1 KB 上限**，超出会打印 `[truncated at N bytes]`。这是有意的：115200
+波特的无界输出会把提示符冲到屏幕外面。
+
+文件名可以写 `s3fs.txt`，也可以写 `/storage/s3fs.txt`。
+
+出错时都是明确的：
+
+```
+msh >s3fs cat NOPE.txt
+s3fs cat: cannot open /storage/NOPE.txt (errno=2)
+
+msh >s3fs cat
+usage: s3fs cat <name>
+```
+
+### 4.6 擦除分区（Wi-Fi 会先被停掉）
 
 ```
 msh >s3fs unmount
@@ -304,7 +335,7 @@ s3fs: PASS, mounted at /storage, wrote and read back 511 bytes
 自己做这件事，但如果手工调用 `esp_partition_erase_range()` 擦大块，要自己先
 `s3wifi stop`。详见 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) 第 2 条。
 
-### 4.6 分区坏了怎么办
+### 4.7 分区坏了怎么办
 
 如果 `s3fs` 报 `FAIL, cannot open ... errno=13 (Permission denied)`：
 
