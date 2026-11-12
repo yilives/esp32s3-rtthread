@@ -256,8 +256,19 @@ s3ble: bringing up the BLE controller on the FreeRTOS shim
 s3ble: PASS, host synced in \d+ ms, addr ([0-9a-f]{2}:){5}[0-9a-f]{2}
 s3ble: advertising as "[^"]+" \(service 0x[0-9A-Fa-f]{4}, chr 0x[0-9A-Fa-f]{4} read, 0x[0-9A-Fa-f]{4} write\)
 
+# `s3ble deinit` is the other teardown path. It used to open-code the same
+# nimble_port_stop() sequence without the flag that suppresses the advertising
+# restart, and printed "adv_set_fields failed rc=30" in the middle of its own
+# output. Both paths call s3ble_shutdown_quiet() now.
+#
+# Last of the BLE sections: deinit leaves the stack down, and everything else in
+# this group assumes it is up.
 [s3ble info]
 s3ble info: up=\d synced=\d advertising=\d conns=\d last_disc=\d+ adv_err=\d+
+
+
+[s3ble deinit]
+s3ble deinit: PASS, stack down
 
 [s3wifi <ssid> <pass>]
 s3wifi: bringing up esp_wifi on the FreeRTOS shim

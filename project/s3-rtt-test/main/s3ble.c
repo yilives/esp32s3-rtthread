@@ -533,22 +533,26 @@ static int cmd_ble(int argc, char **argv)
      */
     if (argc >= 2 && rt_strcmp(argv[1], "deinit") == 0)
     {
-        int rc = nimble_port_stop();
-
-        if (rc != 0)
+        /*
+         * Same teardown as s3ble_shutdown_quiet(), and for the same reason.
+         *
+         * This path used to open-code nimble_port_stop() without setting
+         * s_ble_shutting_down, so the gap callback restarted advertising while
+         * the stack was coming down and printed
+         *
+         *   s3ble: adv_set_fields failed rc=30
+         *
+         * The flag was added to s3ble_shutdown_quiet() and this copy was
+         * missed - the same "guard added in one place only" pattern that
+         * produced the netif bugs. Calling the shared helper removes the
+         * duplication instead of patching it twice.
+         */
+        if (s3ble_shutdown_quiet() != RT_EOK)
         {
-            rt_kprintf("s3ble deinit: nimble_port_stop rc=%d\n", rc);
-        }
-
-        if (nimble_port_deinit() != ESP_OK)
-        {
-            rt_kprintf("s3ble deinit: nimble_port_deinit FAILED\n");
+            rt_kprintf("s3ble deinit: teardown FAILED\n");
             return -1;
         }
 
-        s_ble_up = RT_FALSE;
-        s_ble_synced = 0;
-        s_ble_adv_started = 0;
         rt_kprintf("s3ble deinit: PASS, stack down (BLE MAC no longer on air)\n");
         return 0;
     }

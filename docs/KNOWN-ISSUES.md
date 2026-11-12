@@ -1134,10 +1134,39 @@ if (host == RT_NULL) {
 s3net: no IP yet - run `s3wifi <ssid> <pass>` first
 ```
 
+### 22.4 `s3ble deinit` 复制的拆栈逻辑漏了保护
+
+拆栈代码有**两份**：`s3ble_shutdown_quiet()` 和 `deinit` 子命令内联的一份。
+第 13 轮给前者加了 `s_ble_shutting_down` 标志（阻止 gap 回调在拆栈时重启广播），
+后者没加，于是：
+
+```
+s3ble deinit
+s3ble: adv_set_fields failed rc=30
+s3ble deinit: PASS, stack down
+```
+
+改成一个实现：`deinit` 调 `s3ble_shutdown_quiet()`。
+
+**这是同一模式的第四例**：保护加在一处，另一处复制了逻辑没复制保护。
+前三例是 netif 创建（`s3wifiscan` 修了 `s3wifi` 没修）、`s3net` 的网关检查
+（只覆盖一个分支）、`s3wifi` 的重连检查（被自己的初始化清零）。
+
 ### 怎么找到的
 
-不是读代码 —— 是**把每个命令连续跑两次**，以及**在无网络时跑 s3net**。
-这三条路径以前都没人走过。
+不是读代码 —— 是先**静态检查哪些命令读状态**，再对可疑的几个**在错误状态下
+试一遍**。
+
+四例的发现方式：
+
+| 例 | 怎么发现的 |
+| --- | --- |
+| 22.1 s3wifi netif | 连续跑两次 |
+| 22.2 s3wifi 重连 | 修完 22.1 后重跑 |
+| 22.3 s3net 无 IP | 在无网络时跑 |
+| 22.4 s3ble deinit | 静态找重复逻辑，然后跑 `deinit` |
+
+静态分析本身没有指出 bug——它只是缩小了范围。**每一例都还是跑出来才确认的。**
 
 现在 `check-docs.ps1` 覆盖了它们（38 节）：
 
