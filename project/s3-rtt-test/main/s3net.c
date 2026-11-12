@@ -97,6 +97,31 @@ static int cmd_s3net(int argc, char **argv)
     {
         struct hostent *he;
 
+        /*
+         * Check for a lease before touching lwIP at all.
+         *
+         * gethostbyname() on an uninitialised stack asserts deep inside lwIP:
+         *
+         *   assert failed: tcpip_send_msg_wait_sem
+         *     /IDF/components/lwip/lwip/src/api/tcpip.c:454 (Invalid mbox)
+         *
+         * The guard below this used to cover only the no-argument path (aim at
+         * the gateway), so `s3net example.com` before `s3wifi` reset the board
+         * while `s3net` alone printed a friendly message. The check has to come
+         * first, not inside one branch.
+         */
+        {
+            esp_netif_t *pre = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            esp_netif_ip_info_t pre_ip;
+
+            if (pre == RT_NULL || esp_netif_get_ip_info(pre, &pre_ip) != ESP_OK ||
+                pre_ip.ip.addr == 0)
+            {
+                rt_kprintf("s3net: no IP yet - run `s3wifi <ssid> <pass>` first\n");
+                return -1;
+            }
+        }
+
         if (host == RT_NULL)
         {
             /* No argument: aim at the gateway, which is the one address that

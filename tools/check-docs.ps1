@@ -95,7 +95,8 @@ foreach ($line in Get-Content $expectFile) {
 # patterns cannot match without them.
 # Sections whose command needs credentials. Matched exactly, so the section
 # with placeholders in its name has to be listed in that form.
-$needsWifi = @('s3wifiscan', 's3net example.com', 's3wifi <ssid> <pass>')
+$needsWifi = @('s3wifiscan', 's3net example.com',
+               's3wifi <ssid> <pass>', 's3wifi <ssid> <pass> #second call')
 $needsCreds = @{ 's3net example.com' = $true }
 
 if ($List) {
@@ -250,7 +251,11 @@ for name, spec in CFG["sections"].items():
     # A section name may carry placeholders for the credentials; the section
     # name IS the command, so substituting here is what makes
     # "s3wifi <ssid> <pass>" runnable without a special case per command.
-    cmd = name.replace("<ssid>", CFG["wifi_ssid"]).replace("<pass>", CFG["wifi_pass"])
+    # "[cmd #note]" runs `cmd`; the note only makes the section name unique.
+    # Without it a section could never run the same command twice, and "call it
+    # twice in a row" is exactly how the missing netif guards were found.
+    cmd = name.split(" #")[0].strip()
+    cmd = cmd.replace("<ssid>", CFG["wifi_ssid"]).replace("<pass>", CFG["wifi_pass"])
     wait = REBOOT_WAIT if reboots else WAIT.get(name, WAIT.get(cmd, DEFAULT_WAIT))
 
     mark = len(raw)

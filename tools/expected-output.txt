@@ -193,6 +193,11 @@ s3fs: /storage/\S+ left in place; reboot and rerun to prove persistence
 [s3fs read]
 s3fs read: PASS, \d+ bytes intact after reboot
 
+# `s3wifi` a second time, immediately after the first. The first call creates
+# the default station netif; calling esp_netif_create_default_wifi_sta() again
+# asserts inside IDF (wifi_default.c:437), so the command detects the existing
+# netif first. It has to sit here - the guard only has anything to find if a
+# station netif already exists.
 [s3fs unmount]
 s3fs unmount
 
@@ -231,6 +236,16 @@ s3fsbench: write  256 KB in (\d+) ms -> (\d+) KB/s
 ~ 1 in 700..3000
 ~ 2 in 90..400
 
+# Every ESP-IDF bring-up call that is not idempotent needs a guard, and guard
+# placement matters as much as the guard. Both of these were found by trying the
+# call twice in a row, which nothing had done before.
+#
+# `s3net` with no lease must refuse rather than reach lwIP. This runs first,
+# while there is still no IP.
+[s3net example.com #without ip]
+s3net: no IP yet - run `s3wifi <ssid> <pass>` first
+s3net: command failed
+
 [s3ble]
 s3ble: bringing up the BLE controller on the FreeRTOS shim
   nvs_flash_init               ok
@@ -256,6 +271,14 @@ s3wifi: bringing up esp_wifi on the FreeRTOS shim
 esp_wifi_connect           ok
 s3wifi: PASS, connected to "[^"]+"
 s3wifi: ip \d+\.\d+\.\d+\.\d+ mask \d+\.\d+\.\d+\.\d+ gw \d+\.\d+\.\d+\.\d+
+
+
+[s3wifi <ssid> <pass> #second call]
+s3wifi: bringing up esp_wifi on the FreeRTOS shim
+  create default wifi sta\s+ok \(already created\)
+  esp_wifi_init              ok
+s3wifi: already connected to
+s3wifi: PASS \(already connected\)
 
 [s3wifiscan]
 s3wifiscan: scanning \(2\.4 GHz only - the S3 has no 5 GHz radio\)

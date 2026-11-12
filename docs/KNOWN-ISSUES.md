@@ -1069,6 +1069,88 @@ erase -> s3fs format -> mount -> small : 152/136
 
 ---
 
+## 22. 三个"调用两次"才暴露的 bug（已修）
+
+第 14 条修了 `s3wifiscan` 的两处 netif 顺序错误之后，同样的模式在别的命令里还
+存在。这一轮逐个试"把同一个命令跑两次"，找到三处。
+
+### 22.1 `s3wifi` 第二次调用崩
+
+```
+E esp_netif_lwip: esp_netif_new_api: Failed to configure netif
+assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437 (netif)
+```
+
+和第 14 条完全相同的 bug：`esp_netif_create_default_wifi_sta()` 不能调两次。
+`s3wifiscan` 当时加了 `esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")` 检查，
+`s3wifi` 没加。
+
+修法相同。修完后第二次调用打印 `ok (already created)`。
+
+### 22.2 `s3wifi` 第二次调用等 15 秒后失败
+
+修完 22.1 之后第二次调用不再崩，但变成了：
+
+```
+s3wifi: FAIL after 15000 ms: connected=0, retries=0, last reason=0
+```
+
+**链路一直是通的。** 原因是 `esp_wifi_connect()` 在已连接状态下返回错误，
+没有 DISCONNECT 事件，于是命令等满超时。
+
+加了早退检查——但位置错了一次，放在了等待循环**之后**，等于没加。移到
+`esp_wifi_connect()` 之前才对。
+
+**然后仍然失败**，因为 `cmd_wifi()` 开头无条件 `s_wifi_got_ip = 0`，把自己的
+检查依据清掉了。这个字段必须保留；其它状态字段（`s_wifi_started` 等）继续清零。
+
+修完后第二次调用：
+
+```
+s3wifi: already connected to "..."，nothing to do
+s3wifi: PASS (already connected)
+```
+
+### 22.3 `s3net` 在 Wi-Fi 未启动时崩溃
+
+```
+s3net example.com
+assert failed: tcpip_send_msg_wait_sem tcpip.c:454 (Invalid mbox)
+```
+
+命令里**有**保护，但只覆盖无参数路径（连网关）：
+
+```c
+if (host == RT_NULL) {
+    if (netif == RT_NULL || ... ip.gw.addr == 0) {
+        rt_kprintf("s3net: no gateway yet ...");
+```
+
+带参数时直接走 `gethostbyname()`，在 lwIP 未初始化时断言。
+
+把检查提到所有网络操作之前，判据从"有网关"改成"有 IP"：
+
+```
+s3net: no IP yet - run `s3wifi <ssid> <pass>` first
+```
+
+### 怎么找到的
+
+不是读代码 —— 是**把每个命令连续跑两次**，以及**在无网络时跑 s3net**。
+这三条路径以前都没人走过。
+
+现在 `check-docs.ps1` 覆盖了它们（38 节）：
+
+```
+[s3net example.com #without ip]
+[s3wifi <ssid> <pass> #second call]
+```
+
+节名里的 `#` 后缀是为此加的：一节只能是一条命令，而"同一命令跑两次"需要两个
+节。`#` 后面只用于区分，不发送给板子。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -1095,3 +1177,4 @@ erase -> s3fs format -> mount -> small : 152/136
 | 19 | 152 vs 190 写次数归因错误 | 中 | 已更正：是 `use_one_fat`，不是卷的历史；A/B 实测 |
 | 20 | 从零 configure 失败 | **高** | 已修：sibling 路径 + RTTHREAD_ROOT 未写 cache |
 | 21 | `s3fs format` 创建双 FAT 卷 | **中** | 已修：共享 mkfs 配置，两条路径一致 |
+| 22 | 三个"调用两次"才暴露的 bug | **中** | 已修：s3wifi netif/重连、s3net 无 IP 保护 |

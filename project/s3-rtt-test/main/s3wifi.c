@@ -352,9 +352,18 @@ static int cmd_wifi(int argc, char **argv)
         return -1;
     }
 
+    /*
+     * Leave s_wifi_got_ip alone: it is the whole point of the check below.
+     *
+     * This block used to clear it along with everything else, so the "already
+     * connected" test could never fire - by the time it ran, the flag had just
+     * been zeroed and the command went on to reconnect a link that was already
+     * up, waited out 15 s and reported failure.
+     *
+     * The other fields describe this invocation and are correctly reset.
+     */
     s_wifi_started     = 0;
     s_wifi_connected   = 0;
-    s_wifi_got_ip      = 0;
     s_wifi_fail_reason = 0;
     s_wifi_retries     = 0;
     rt_memset(&s_wifi_ipinfo, 0, sizeof(s_wifi_ipinfo));
@@ -399,13 +408,35 @@ static int cmd_wifi(int argc, char **argv)
         return -1;
     }
 
-    netif = esp_netif_create_default_wifi_sta();
+    /*
+     * Only create the station netif if it is not already there.
+     *
+     * esp_netif_create_default_wifi_sta() must not be called twice - the second
+     * call reaches esp_netif_new_api() with handlers already attached and
+     * asserts:
+     *
+     *   E esp_netif_lwip: esp_netif_new_api: Failed to configure netif
+     *   assert failed: esp_netif_create_default_wifi_sta wifi_default.c:437
+     *
+     * so `s3wifi` twice in one boot reset the board. s3wifiscan had the same
+     * bug and got the same guard; this command did not, because its second call
+     * had never been tried.
+     */
+    netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif == RT_NULL)
     {
-        rt_kprintf("  %-26s FAILED\n", "create default wifi sta");
-        return -1;
+        netif = esp_netif_create_default_wifi_sta();
+        if (netif == RT_NULL)
+        {
+            rt_kprintf("  %-26s FAILED\n", "create default wifi sta");
+            return -1;
+        }
+        rt_kprintf("  %-26s ok\n", "create default wifi sta");
     }
-    rt_kprintf("  %-26s ok\n", "create default wifi sta");
+    else
+    {
+        rt_kprintf("  %-26s ok (already created)\n", "create default wifi sta");
+    }
 
     /* Strict now: with the loop in place there is no benign reason for
      * INVALID_STATE here. */
@@ -628,6 +659,26 @@ static int cmd_wifi(int argc, char **argv)
          * proven, so this cannot be mistaken for a working link. */
         rt_kprintf("s3wifi: PASS (interface up, not connected - pass <ssid> <pass> "
                    "to connect)\n");
+        return 0;
+    }
+
+    /*
+     * Already associated and holding a lease: stop here.
+     *
+     * A second `s3wifi` with the same credentials used to run the whole sequence
+     * again. esp_wifi_connect() then fails because the station is already
+     * connected, no DISCONNECT event follows, and the command waited out its
+     * full 15 s before reporting failure - on a link that was up the whole time:
+     *
+     *   E wifi_init: Failed to init, WiFi is initialized by esp_wifi_init
+     *   s3wifi: FAIL after 15000 ms: connected=0, retries=0, last reason=0
+     *
+     * This check has to be before esp_wifi_connect(), not after the wait.
+     */
+    if (s_wifi_got_ip != 0)
+    {
+        rt_kprintf("s3wifi: already connected to \"%s\", nothing to do\n", ssid);
+        rt_kprintf("s3wifi: PASS (already connected)\n");
         return 0;
     }
 
