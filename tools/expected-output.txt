@@ -34,9 +34,10 @@
 #
 #  1. The `s3fsbench small` write and erase counts are exact, not a range.
 #     They are 152/136 with use_one_fat = true, regardless of the volume's
-#     history - measured across four states (just formatted, second run on the
-#     same volume, after the bulk write, and across a reboot with files left
-#     behind). 190/170 means use_one_fat was turned off, and 1460 means the
+#     history - measured across five states (just formatted, second run on the
+#     same volume, after the bulk write, after a `s3fsbench write`, and across a
+#     reboot with files left behind), the last three re-checked and identical.
+#     190/170 means use_one_fat was turned off, and 1460 means the
 #     allocation-unit tuning is missing. Exact values make both of those
 #     visible; a range around 152 would only catch the first.
 #
@@ -308,6 +309,10 @@ s3fsbench: create 32 small files -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B
 s3fsbench: overwrite one file 8x -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
 ~ 1 in 40..60
 ~ 2 in 35..55
+# These are wide on purpose. The wall-clock numbers vary by up to 40% on the
+# same device - the bulk of the time is SPI NOR erase - so a tight range would
+# fail at random rather than on a regression. The exact assertions in this file
+# are on write and erase counts, which do not move.
 s3fsbench: create 32 x 64 B in (\d+) ms
 ~ 1 in 4000..12000
 s3fsbench: overwrite one file 8x in (\d+) ms
