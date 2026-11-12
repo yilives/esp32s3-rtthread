@@ -283,6 +283,19 @@ s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
 ~ 1 in 100..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 
+[s3ulp after radios]
+s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
+~ 1 in 50..3000
+s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
+
 [s3ulp stop]
 s3ulp: PASS, halted - no completions in \d+ ms \(total \d+\)
 
+# ULP again, with both radios up. KNOWN-ISSUES 2b records that the single-core
+# build cannot do this at all; the dual-core build is supposed to, and until now
+# nothing verified it as part of a run.
+#
+# This must come BEFORE [s3ulp stop]: `s3ulp stop` halts the co-processor and
+# every later `s3ulp` reports "stopped; run `s3ulp start` first". That is by
+# design, and the first version of this section sat after the stop and failed
+# with both patterns missing for exactly that reason.

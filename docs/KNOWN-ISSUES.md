@@ -215,7 +215,19 @@ reconfigure，会继续用缓存的选择。改完要 `idf.py reconfigure`：
 是按 tick 轮询的——Wi-Fi ISR 占满 CPU 时 tick 涨不起来，轮询永远看不到
 `completions` 变化，最终被看门狗复位。
 
-双核没有这个问题，因为 ULP 的等待方在 CPU1、Wi-Fi 在 CPU0。
+双核没有这个问题。实测依据：
+
+| 检查 | 结果 |
+| --- | --- |
+| `s3ulpw` 的 `list thread` 行 | `ulpw N/A bind=2` —— 绑定在 CPU1 |
+| Wi-Fi 关联后连测 10 次 `s3ulp` | 962 / 631 / 1547 / 1711 / 956 / 1185 / 1026 / 1460 / 817 / 1249 µs |
+| 与无 Wi-Fi 对比 | 524–1673 µs，同一区间 |
+| BLE 也起来后 `s3ulp` | PASS，259 µs |
+
+**是"绑定"，不是"正在跑"。** `list thread` 的 `cpu` 列显示 `N/A`，因为
+`ulpw` 在两次 kick 之间处于 `suspend`——它没有占用任何核，只是每次被唤醒时
+调度器把它放到 CPU1。这个区别有实际意义：它解释了为什么 Wi-Fi 的 ISR 在
+CPU0 上忙不影响 ULP 的轮询线程被调度到 CPU1。
 
 ### 结论
 
