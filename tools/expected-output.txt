@@ -112,8 +112,14 @@ pattern over 256 KB: OK \(\d+ bad word\(s\)\)
 led   : blinked 5x on GPIO48 \(active-low\), left ON
 
 [s3rt pwm]
-pwm   : ch0 on GPIO48, \d+ ns high of \d+ ns \(about \d+ Hz\)
-duty_start 1 -> LED should be dimmed; `s3rt led` gives full brightness
+pwm   : ch0 on GPIO48, \d+ ns period \(about \d+ Hz\)
+ 25%: duty (\d+), expected ~\d+ ok
+~ 1 in 60000..70000
+ 50%: duty (\d+), expected ~\d+ ok
+~ 1 in 125000..140000
+ 75%: duty (\d+), expected ~\d+ ok
+~ 1 in 190000..205000
+        left at 50%; `s3rt led` gives full brightness
 
 [s3rt key]
 key   : GPIO0 idle \(high\), \d+ press\(es\) counted

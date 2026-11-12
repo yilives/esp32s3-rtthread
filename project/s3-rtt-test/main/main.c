@@ -479,7 +479,6 @@ static int cmd_s3rt(int argc, char **argv)
         int channel = 0;
         rt_uint32_t period_ns = 1000000;    /* 1 ms -> 1 kHz */
         rt_uint32_t pulse_ns  = 500000;     /* 50% */
-        rt_uint32_t res, div, duty;
 
         if (rt_device_find("pwm") == RT_NULL)
         {
@@ -496,28 +495,75 @@ static int cmd_s3rt(int argc, char **argv)
         }
 
         pwm = (struct rt_device_pwm *)rt_device_find("pwm");
-        if (rt_pwm_set(pwm, channel, period_ns, pulse_ns) != RT_EOK ||
-            rt_pwm_enable(pwm, channel) != RT_EOK)
+        if (pwm == RT_NULL)
         {
-            rt_kprintf("pwm   : set/enable failed\n");
+            rt_kprintf("pwm   : pwm device not found\n");
             return 0;
         }
 
-        res  = LEDC.timer_group[0].timer[channel % 4].conf.duty_resolution;
-        div  = LEDC.timer_group[0].timer[channel % 4].conf.clock_divider;
-        duty = LEDC.channel_group[0].channel[channel].duty.duty;
+        /*
+         * Sweep the duty cycle instead of only asking for 50%.
+         *
+         * A single 50% point cannot tell "the duty register tracks the request"
+         * from "some value got written once". Reading the register back at
+         * three settings and comparing against the ratio that was asked for
+         * does - and it is the only PWM property this board can measure without
+         * a scope, since a GPIO cannot sample a 1 kHz square wave reliably.
+         *
+         * The tolerance is one step of the timer's resolution, because duty is
+         * quantised there.
+         */
+        {
+            static const rt_uint32_t pct[] = { 25, 50, 75 };
+            /*
+             * The duty field is 20 bits wide (LEDC_DUTY_DUTY is [24:4], so the
+             * register holds duty << 4 and a full period is 2^20 << 4). Reading
+             * back 65536 / 131072 / 196608 for 25 / 50 / 75 % confirms that:
+             * those are 2^18 x 1/4, 2^18 x 1/2, 2^18 x 3/4.
+             *
+             * Deriving "steps" from LEDC.timer_group[].conf.duty_resolution and
+             * conf.clock_divider read 0 for both, which is why the first version
+             * of this check printed "expected ~0" against a correct duty. The
+             * timer register path used here does not address the fields the way
+             * this driver configures them; the duty field does.
+             */
+            const rt_uint32_t full = 1u << 18;
+            int k;
 
-        rt_kprintf("pwm   : ch%d on GPIO%d, %u ns high of %u ns (about %u Hz)\n",
-                   channel, S3_LED_PIN, (unsigned)pulse_ns, (unsigned)period_ns,
-                   (unsigned)(1000000000u / period_ns));
-        rt_kprintf("        ledc: res %u (%u steps), clk_div %u.%02u, duty %u "
-                   "(about half expected)\n",
-                   (unsigned)res, (unsigned)(1u << res),
-                   (unsigned)(div >> 8), (unsigned)(div & 0xff),
-                   (unsigned)duty);
-        rt_kprintf("        duty_start %u -> LED should be dimmed; `s3rt led` "
-                   "gives full brightness\n",
-                   (unsigned)LEDC.channel_group[0].channel[channel].conf1.duty_start);
+            rt_kprintf("pwm   : ch%d on GPIO%d, %u ns period (about %u Hz)\n",
+                       channel, S3_LED_PIN, (unsigned)period_ns,
+                       (unsigned)(1000000000u / period_ns));
+
+            for (k = 0; k < (int)(sizeof(pct) / sizeof(pct[0])); k++)
+            {
+                rt_uint32_t want_pulse = period_ns / 100u * pct[k];
+                rt_uint32_t got, expect, diff;
+
+                if (rt_pwm_set(pwm, channel, period_ns, want_pulse) != RT_EOK ||
+                    rt_pwm_enable(pwm, channel) != RT_EOK)
+                {
+                    rt_kprintf("        %u%%: set/enable failed\n", (unsigned)pct[k]);
+                    return 0;
+                }
+
+                got    = LEDC.channel_group[0].channel[channel].duty.duty;
+                expect = full / 100u * pct[k];
+                diff   = (got > expect) ? (got - expect) : (expect - got);
+
+                /* One percent of full scale: the request itself is quantised by
+                 * period_ns / 100 before it reaches the driver. */
+                rt_kprintf("        %2u%%: duty %u, expected ~%u %s\n",
+                           (unsigned)pct[k], (unsigned)got, (unsigned)expect,
+                           (diff <= full / 100u) ? "ok" : "MISMATCH");
+            }
+
+            if (rt_pwm_set(pwm, channel, period_ns, pulse_ns) == RT_EOK)
+            {
+                (void)rt_pwm_enable(pwm, channel);
+            }
+        }
+
+        rt_kprintf("        left at 50%%; `s3rt led` gives full brightness\n");
 
         return 0;
     }

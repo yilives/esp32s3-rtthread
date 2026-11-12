@@ -1229,6 +1229,55 @@ Pass 'force' if that peripheral is idle.
 
 ---
 
+## 24. PWM 只测了一个 50% 点，且读回的 timer 寄存器是 0（已修）
+
+### 24.1 一个点证明不了调制
+
+`s3rt pwm` 原来只设一次 50%，读回 duty 寄存器，然后打印"LED should be dimmed"。
+那是**指令**，不是测量。一个 50% 点无法区分"duty 跟随请求"和"某个值被写进去
+一次"。
+
+现在扫 25% / 50% / 75% 三点，各自和请求比例对比：
+
+```
+pwm   : ch0 on GPIO48, 1000000 ns period (about 1000 Hz)
+ 25%: duty 65536, expected ~65525 ok
+ 50%: duty 131072, expected ~131050 ok
+ 75%: duty 196608, expected ~196575 ok
+```
+
+比值精确到 1/4、1/2、3/4——这是这块板子在**没有示波器**的情况下唯一能测的
+PWM 属性（GPIO 采样跟不上 1 kHz 方波）。
+
+### 24.2 第一次改进反而报错了
+
+第一版用 `LEDC.timer_group[0].timer[n].conf.duty_resolution` 和 `conf.clock_divider`
+推满量程，两个都读回 **0**：
+
+```
+pwm   : ch0 on GPIO48, 1000000 ns period (about 1000 Hz), res 0 (1 steps)
+ 25%: duty 65536, expected ~0 OFF
+```
+
+duty 本身是对的（65536 = 2^18 × 1/4），但 `res` 算出的满量程是 1，于是期望值
+是 0，判据报了三个 OFF。
+
+**timer 寄存器路径和这个驱动配置的字段对不上**，duty 字段对得上。改成直接从
+duty 字段推满量程（2^18），并把这个陷阱写进注释——否则下一个人会再犯。
+
+### 24.3 我的期望清单又错了一次
+
+三个 `~` 约束行全写在了最后一个 pattern 之后，于是全部约束到 75% 那一行：
+
+```
+missing: 75%: duty (\d+), ... (group 1 is 196608, outside 60000..70000)
+```
+
+工具的行为是"~ 约束它上面的那个 pattern"，我写成了"三个一起约束最后一个"。
+每个 `~` 必须紧跟它约束的行。
+
+---
+
 ## 汇总表## 汇总表## 汇总表
 
 | # | 限制 | 严重度 | 可行的修法 |
@@ -1257,3 +1306,4 @@ Pass 'force' if that peripheral is idle.
 | 21 | `s3fs format` 创建双 FAT 卷 | **中** | 已修：共享 mkfs 配置，两条路径一致 |
 | 22 | 三个"调用两次"才暴露的 bug | **中** | 已修：s3wifi netif/重连、s3net 无 IP 保护 |
 | 23 | ADC 百分比措辞与三次读数注释 | 低 | 已修：改 "% of code range"，注释附实测数据 |
+| 24 | PWM 只测一个点，timer 寄存器读回为 0 | 低 | 已修：三点扫描，从 duty 字段推满量程 |
