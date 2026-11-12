@@ -17,7 +17,7 @@
             └──────────────┬──────────────────────┘
                            │  FreeRTOS API
             ┌──────────────▼──────────────────────┐
-            │  components/rtthread/port/freertos  │  ← 兼容层（3751 行）
+            │  components/rtthread/port/freertos  │  ← 兼容层（4943 行）
             │  xQueueCreate → ft_ipc_create 等    │
             └──────────────┬──────────────────────┘
                            │  RT-Thread API
@@ -305,7 +305,7 @@ Guru Meditation Error: Core 1 panic'ed (LoadProhibited)
 
 ## 四、FreeRTOS API 兼容层
 
-`esp-idf/components/rtthread/port/freertos/`，4204 行，9 个文件。
+`esp-idf/components/rtthread/port/freertos/`，4943 行，9 个文件（8 个 `.c` + 1 个 `.h`）。
 
 ### 4.1 核心思想
 
