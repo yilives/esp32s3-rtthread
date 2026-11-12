@@ -579,8 +579,27 @@ static int cmd_s3adc(int argc, char **argv)
         return -1;
     }
 
-    /* Three reads: the first can carry the previous channel's residue on this
-     * controller, so a stable answer is what proves the channel really changed. */
+    /*
+     * Three reads, and they are NOT expected to agree on a floating input.
+     *
+     * The first can carry the previous channel's residue on this controller, so
+     * a stable answer would prove the channel really changed - that is why the
+     * loop exists. Measured on a bare board, all ten ADC1 pads floating:
+     *
+     *   ch0 GPIO1  3068 3014 2967      <- monotonic, ~100 counts apart
+     *   ch1 GPIO2  2821 2777 2741
+     *   ch2 GPIO3  2839 2793 2750
+     *   ch3 GPIO4  2664 2621 2587
+     *
+     * Falling, not noisy: the sample-and-hold capacitor has no driver, so each
+     * conversion shares whatever charge the previous one left. A pin that IS
+     * driven reads the same every time - GPIO8/9 (I2C with pull-ups) give 4095
+     * twice with no drift.
+     *
+     * So "three equal samples" is evidence of a driven input, not a requirement.
+     * The command prints all three precisely so this is visible rather than
+     * averaged away.
+     */
     {
         const rt_uint32_t full = (1u << SOC_ADC_RTC_MAX_BITWIDTH) - 1u;
         int i;
@@ -600,7 +619,18 @@ static int cmd_s3adc(int argc, char **argv)
              * conversion - the first version printed "%f% of full scale"
              * verbatim, which is a vivid reminder that the kernel printf is not
              * the C library one. */
-            rt_kprintf("s3adc: adc%u ch%u (GPIO%d) = %u / %u (%u.%u%% of full scale)\n",
+            /*
+             * "%u / 4095", not "% of full scale".
+             *
+             * The percentage is raw/4095 and nothing more: this driver reports
+             * the 12-bit code with no calibration (see the file header), so it
+             * says nothing about volts. "62.0% of full scale" reads like a
+             * measurement of the input when it is a measurement of the code -
+             * and with the attenuation fixed at 12 dB, readers will assume
+             * 62% of 3.3 V. That assumption is off by however much this
+             * particular chip's VREF is off.
+             */
+            rt_kprintf("s3adc: adc%u ch%u (GPIO%d) = %u / %u (%u.%u%% of code range)\n",
                        (unsigned)unit, (unsigned)ch, (int)pin, (unsigned)value,
                        (unsigned)full,
                        (unsigned)(value * 1000ull / full / 10),

@@ -162,8 +162,14 @@ spiloop: spi0 \d+ bytes, \d+ cycles = ~\d+ us \(expected ~\d+ us at \d+ Hz\)
 spiloop: spi0 tx -> rx: ([0-9a-f]{2} )+
 spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
 
+# s3adc refuses to measure a pad that belongs to a peripheral, and says why.
+# GPIO8 is i2c0 SDA; measuring it would report the pull-up, not an input.
+[s3adc 1 7]
+s3adc: GPIO8 is the i2c0 SDA pad
+Pass 'force' if that peripheral is idle
+
 [s3adc 1 3]
-s3adc: adc1 ch3 \(GPIO\d+\) = \d+ / \d+ \(\d+\.\d% of full scale\)
+s3adc: adc1 ch3 \(GPIO\d+\) = \d+ / \d+ \(\d+\.\d% of code range\)
 
 [s3wdt]
 s3wdt: armed=\d feeds=\d+ paused=\d timeout=\d+ ms period=\d+ ms
