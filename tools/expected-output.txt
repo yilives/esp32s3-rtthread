@@ -159,6 +159,19 @@ i2cscan: probing i2c0 \(\d+ Hz\)
 i2cscan: idle levels SCL\(GPIO\d+\)=\d SDA\(GPIO\d+\)=\d
 i2cscan: \d+ device\(s\) on i2c0, \d+ flaky, \d+ timeout\(s\), \d+ ms
 
+# `i2cscan` reporting zero devices is also what a driver that never toggled a
+# line would report. i2cwatch counts SCL edges during one transfer to tell those
+# apart: 8 data bits plus the ACK slot is 9 falling edges.
+#
+# Default rate is 10 kHz, not the bus's 100 kHz, because an edge interrupt
+# cannot reliably catch a 100 kHz bus on this chip - measured 10, 10, 1, 10 at
+# 100 kHz against 9, 9, 9, 9, 9, 9 at 10 kHz.
+[i2cwatch 0 0x50]
+i2cwatch: i2c0 addr 0x50 at (\d+) Hz -> rc=-?\d+ \(\w+\), SCL\(GPIO\d+\) edges=(\d+)
+~ 1 == 10000
+~ 2 in 8..12
+i2cwatch: PASS - the bus is being clocked
+
 [i2cprobe 0x50 8]
 i2cprobe: 0x50 x8 on i2c0
 \[ 0\] rc=-?\d+ (ACK|NACK)

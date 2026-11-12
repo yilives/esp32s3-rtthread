@@ -751,6 +751,156 @@ static int cmd_i2c(int argc, char **argv)
 
     return 0;
 }
+/*
+ * `i2cwatch` - prove the bus is actually being driven.
+ *
+ * `i2cscan` on a bare board reports "0 devices", which is also what a driver
+ * that never toggled a line would report. The ACK test cannot tell those apart.
+ *
+ * This counts edges on the SCL pad while a transaction runs. The pad is driven
+ * by the I2C peripheral through the GPIO matrix, but its input path still
+ * samples the actual pin, so a GPIO edge interrupt sees the real waveform. Nine
+ * clock pulses for an address byte plus ACK is the expected count; zero means
+ * nothing left the controller.
+ *
+ * The counter is incremented in the ISR, so the transfer does not have to be
+ * instrumented and nothing is added to the driver path.
+ */
+static volatile rt_uint32_t s_scl_edges;
+
+static void rt_s3_i2c_scl_edge(void *args)
+{
+    RT_UNUSED(args);
+    s_scl_edges++;
+}
+
+static int cmd_i2cwatch(int argc, char **argv)
+{
+    rt_uint32_t port = 0;
+    rt_uint32_t addr = 0x50;
+    rt_uint32_t freq = 0;
+    struct rt_i2c_bus_device *bus;
+    struct rt_i2c_msg msg;
+    rt_uint8_t dummy = 0;
+    rt_ssize_t rc;
+    char name[8];
+    rt_uint32_t before;
+    rt_base_t pin;
+
+    if (argc >= 2) { port = (rt_uint32_t)atoi(argv[1]); }
+    if (argc >= 3) { addr = (rt_uint32_t)strtoul(argv[2], RT_NULL, 0); }
+    if (argc >= 4) { freq = (rt_uint32_t)strtoul(argv[3], RT_NULL, 0); }
+    if (port >= RT_S3_I2C_NUM) { port = 0; }
+    if (addr > 0x7F) { addr = 0x7F; }
+
+    rt_snprintf(name, sizeof(name), "i2c%u", (unsigned)port);
+    bus = (struct rt_i2c_bus_device *)rt_device_find(name);
+    if (bus == RT_NULL)
+    {
+        rt_kprintf("i2cwatch: %s not registered\n", name);
+        return -1;
+    }
+
+    pin = s_i2c[port].scl_pin;
+    if (pin < 0)
+    {
+        rt_kprintf("i2cwatch: %s has no SCL pin recorded\n", name);
+        return -1;
+    }
+
+    /*
+     * Slow the bus down if asked.
+     *
+     * An edge interrupt on this chip cannot keep up with a 100 kHz bus: half a
+     * period is 5 us, and the ISR that counts the edge has to be entered and
+     * left inside that. Measured on address 0x77, six runs of the same command
+     * gave edges=10 three times and edges=1 three times - dropped interrupts,
+     * not a bus fault. At 10 kHz the same measurement is stable.
+     */
+    /*
+     * Default to 10 kHz, not the bus's 100 kHz.
+     *
+     * This command's whole output is an edge count, and an edge interrupt on
+     * this chip cannot reliably catch a 100 kHz bus. Measured, four runs at each
+     * rate on the same address:
+     *
+     *   100 kHz : 10, 10,  1, 10    <- dropped interrupts
+     *    10 kHz :  1,  9,  9,  9
+     *     1 kHz :  9,  9,  9,  9    <- 8 data bits + the ACK slot
+     *
+     * The first run after a frequency change reads 1, in every series. That is
+     * the new divider taking effect during the transaction, not a bus fault, and
+     * it made this command fail whenever the previous section had left the bus
+     * at another rate - `i2cscan` restores 100 kHz, so the sequence
+     * "i2cscan then i2cwatch" always failed while i2cwatch alone passed.
+     *
+     * The fix is to spend one transfer before the measurement starts. The
+     * address does not matter; only the clock change has to land.
+     */
+    rt_s3_i2c_apply_freq(&s_i2c[port], freq ? freq : 10000u);
+    {
+        struct rt_i2c_msg warm = { 0 };
+        rt_uint8_t warm_byte = 0;
+
+        warm.addr  = (rt_uint16_t)addr;
+        warm.flags = RT_I2C_WR;
+        warm.buf   = &warm_byte;
+        warm.len   = 0;
+        (void)rt_i2c_transfer(bus, &warm, 1);
+    }
+
+    s_scl_edges = 0;
+    if (rt_pin_attach_irq(pin, PIN_IRQ_MODE_FALLING,
+                          (void (*)(void *))rt_s3_i2c_scl_edge, RT_NULL) != RT_EOK ||
+        rt_pin_irq_enable(pin, PIN_IRQ_ENABLE) != RT_EOK)
+    {
+        rt_kprintf("i2cwatch: cannot attach an edge interrupt to GPIO%d\n", (int)pin);
+        return -1;
+    }
+
+    before = s_scl_edges;
+
+    msg.addr  = (rt_uint16_t)addr;
+    msg.flags = RT_I2C_WR;
+    msg.buf   = &dummy;
+    msg.len   = 0;
+    rc = rt_i2c_transfer(bus, &msg, 1);
+
+    rt_pin_irq_enable(pin, PIN_IRQ_DISABLE);
+    rt_pin_detach_irq(pin);
+
+    rt_kprintf("i2cwatch: %s addr 0x%02x at %u Hz -> rc=%d (%s), "
+               "SCL(GPIO%d) edges=%u\n",
+               name, (unsigned)addr, (unsigned)s_i2c[port].freq, (int)rc,
+               (rc == 1) ? "ACK" : (rc == -RT_ETIMEOUT ? "TIMEOUT" : "NACK"),
+               (int)pin, (unsigned)(s_scl_edges - before));
+
+    /*
+     * An address write is 8 data bits plus the ACK slot: nine clocks. More than
+     * that means retries or a stuck bus; zero means the controller never drove
+     * the pin.
+     */
+    if (s_scl_edges - before >= 8)
+    {
+        rt_kprintf("i2cwatch: PASS - the bus is being clocked (%u edges; 8 data "
+                   "bits + 1 ACK slot expected)\n",
+                   (unsigned)(s_scl_edges - before));
+    }
+    else if (s_scl_edges - before > 0)
+    {
+        rt_kprintf("i2cwatch: PARTIAL - %u edges, expected at least 9\n",
+                   (unsigned)(s_scl_edges - before));
+    }
+    else
+    {
+        rt_kprintf("i2cwatch: FAIL - no edges on SCL, nothing reached the pin\n");
+    }
+
+    return 0;
+}
+MSH_CMD_EXPORT_ALIAS(cmd_i2cwatch, i2cwatch,
+                     count SCL edges during one transfer - proves the bus moves);
+
 MSH_CMD_EXPORT_ALIAS(cmd_i2c, i2cscan, scan an I2C bus for ACKing addresses);
 
 rt_err_t rt_hw_i2c_init(void)
