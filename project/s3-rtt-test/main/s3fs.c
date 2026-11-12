@@ -231,6 +231,40 @@ static int s3_fs_mount(void)
     return RT_EOK;
 }
 
+/*
+ * Take the radio down around a long flash operation.
+ *
+ * Called by both `s3fs erase` and `s3fs format`, which have to do the same
+ * thing for the same reason: an associated station writes NVS from its own
+ * task, and those writes cannot share the cache-disable window with a partition
+ * erase. The two call sites used to open-code this, which is the shape that
+ * produced the s3ble deinit bug - the same logic twice, a later fix applied to
+ * one copy.
+ *
+ * Returns 0 if the radio was actually suspended, non-zero if there was nothing
+ * to suspend or the stop failed. The caller only uses it to decide whether to
+ * print; resume is unconditional and checks its own state.
+ */
+static int s3_fs_radio_down(const char *what)
+{
+    if (s3_wifi_suspend_for_flash != RT_NULL &&
+        s3_wifi_suspend_for_flash() == 0)
+    {
+        rt_kprintf("s3fs: Wi-Fi suspended for the %s\n", what);
+        return 0;
+    }
+
+    return -1;
+}
+
+static void s3_fs_radio_up(void)
+{
+    if (s3_wifi_resume_after_flash != RT_NULL)
+    {
+        (void)s3_wifi_resume_after_flash();
+    }
+}
+
 static int s3_fs_unmount(void)
 {
     esp_err_t err;
@@ -262,6 +296,28 @@ static int s3_fs_unmount(void)
  * payload is longer than one sector so it also proves the wear-levelling layer
  * maps more than a single block.
  */
+/*
+ * The expected file contents: a repeating printable pattern.
+ *
+ * Both `s3fs` (write then verify) and `s3fs read` (verify after reboot) need
+ * this, and both used to build it inline. A pattern that repeats is deliberate:
+ * a corrupt read shows up as an obviously wrong character rather than as a
+ * plausible-looking string.
+ *
+ * Shared so the two cannot drift - if the pattern changes, `read` must still be
+ * verifying what the write produced.
+ */
+static void s3_fs_build_expect(char *expect, rt_size_t n)
+{
+    rt_size_t i;
+
+    for (i = 0; i + 1 < n; i++)
+    {
+        expect[i] = (char)('A' + (i % 26));
+    }
+    expect[n - 1] = '\0';
+}
+
 static int cmd_s3fs(int argc, char **argv)
 {
     char path[64];
@@ -269,7 +325,6 @@ static int cmd_s3fs(int argc, char **argv)
     char expect[512];
     FILE *f;
     size_t n;
-    int i;
     esp_err_t err;
 
     if (argc >= 2 && rt_strcmp(argv[1], "unmount") == 0)
@@ -314,22 +369,13 @@ static int cmd_s3fs(int argc, char **argv)
         rt_kprintf("s3fs: erasing %u bytes at 0x%x ...\n",
                    (unsigned)part->size, (unsigned)part->address);
 
-        /* Radio down first: an associated station writes NVS from its own task,
-         * and those writes cannot share the flash window with a 1 MB erase. */
-        if (s3_wifi_suspend_for_flash != RT_NULL &&
-            s3_wifi_suspend_for_flash() == 0)
-        {
-            rt_kprintf("s3fs: Wi-Fi suspended for the erase\n");
-        }
+        (void)s3_fs_radio_down("erase");
 
         fs_wdt_pause();
         e = esp_partition_erase_range(part, 0, part->size);
         fs_wdt_resume();
 
-        if (s3_wifi_resume_after_flash != RT_NULL)
-        {
-            (void)s3_wifi_resume_after_flash();
-        }
+        s3_fs_radio_up();
         if (e != ESP_OK)
         {
             rt_kprintf("s3fs: erase failed 0x%x\n", e);
@@ -383,11 +429,7 @@ static int cmd_s3fs(int argc, char **argv)
          * The asymmetry was the real defect: two commands doing the same kind
          * of thing, one guarded and one not, with no note explaining why.
          */
-        if (s3_wifi_suspend_for_flash != RT_NULL &&
-            s3_wifi_suspend_for_flash() == 0)
-        {
-            rt_kprintf("s3fs: Wi-Fi suspended for the format\n");
-        }
+        (void)s3_fs_radio_down("format");
 
         /*
          * Format with OUR mkfs parameters, not IDF's defaults.
@@ -435,10 +477,7 @@ static int cmd_s3fs(int argc, char **argv)
                                                    &fmt_cfg);
         fs_wdt_resume();
 
-        if (s3_wifi_resume_after_flash != RT_NULL)
-        {
-            (void)s3_wifi_resume_after_flash();
-        }
+        s3_fs_radio_up();
         if (err != ESP_OK)
         {
             rt_kprintf("s3fs: format failed 0x%x (%s)\n", err,
@@ -461,11 +500,7 @@ static int cmd_s3fs(int argc, char **argv)
      * Build the expected payload: a repeating printable pattern, so a corrupt
      * read is obvious in the dump rather than looking like a plausible string.
      */
-    for (i = 0; i < (int)sizeof(expect) - 1; i++)
-    {
-        expect[i] = (char)('A' + (i % 26));
-    }
-    expect[sizeof(expect) - 1] = '\0';
+    s3_fs_build_expect(expect, sizeof(expect));
 
     f = fopen(path, "w");
     if (f == RT_NULL)
@@ -544,7 +579,6 @@ static int s3_fs_read_only(void)
     char expect[512];
     FILE *f;
     size_t n;
-    int i;
 
     if (s3_fs_mount() != RT_EOK)
     {
@@ -564,11 +598,7 @@ static int s3_fs_read_only(void)
     n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
 
-    for (i = 0; i < (int)sizeof(expect) - 1; i++)
-    {
-        expect[i] = (char)('A' + (i % 26));
-    }
-    expect[sizeof(expect) - 1] = '\0';
+    s3_fs_build_expect(expect, sizeof(expect));
 
     if (n != sizeof(expect) - 1 || rt_strcmp(buf, expect) != 0)
     {

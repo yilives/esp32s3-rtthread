@@ -22,6 +22,7 @@
 | `check-docs.ps1` | **在板上跑文档里的命令，比对实际输出**（见下）|
 | `verify-doc-commands.ps1` | **核对文档提到的命令是否真的导出**（见下）|
 | `list-shim-api.ps1` | **列出 FreeRTOS 兼容层实际实现的 API**（见下）|
+| `find-duplication.ps1` | **找出写了两遍的逻辑**（见下）|
 | `expected-output.txt` | 上面那个脚本用的期望清单 |
 
 前三者都 dot-source `env.ps1`。这不是洁癖——之前每个脚本各带一份环境代码，
@@ -176,6 +177,31 @@ ft_task.c        988 行    0 个               <- 线程映射
 
 `PORTING.md` 里 `FT_IRAM` 的代码块还写着 `#if defined(__XTENSA__)`，而实际
 早就改成无条件了；文件行数写的是 3751，实际 4204。散文不会编译失败。
+
+## `find-duplication.ps1`：重复逻辑在哪里
+
+```powershell
+.\tools\find-duplication.ps1                     # 两种视图都跑
+.\tools\find-duplication.ps1 -Mode blocks        # 完全相同的连续代码
+.\tools\find-duplication.ps1 -Mode calls         # 相同的 API 调用序列
+```
+
+两种视图互补：`blocks` 找复制粘贴，`calls` 找**改写过的**拷贝（变量名不同但
+调用顺序相同）。两者都跳过 `rt_kprintf` 这类到处都是的调用。
+
+### 为什么需要它
+
+这个移植里有**四个 bug 形状相同**：一份逻辑写了两遍，保护只加了一份拷贝。
+
+| bug | 一份有保护，另一份没有 |
+| --- | --- |
+| `s3wifi` 两次崩 | `s3wifiscan` 有 netif 检查，`s3wifi` 没有 |
+| `s3net` 无 IP 崩 | 检查只覆盖两个分支中的一个 |
+| `s3wifi` 重连超时 | 检查读的标志被自己的初始化清零 |
+| `s3ble deinit` rc=30 | `shutdown_quiet` 有标志，`deinit` 的拷贝没有 |
+
+工具**不找 bug**，它找的是让这些 bug 可能的重复。找到之后按"这两处应该合并"
+处理，而不是"两处各修一遍"——后者正是下一次疏漏的来源。
 
 ## 参数
 

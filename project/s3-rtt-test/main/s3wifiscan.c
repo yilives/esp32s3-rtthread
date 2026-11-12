@@ -20,8 +20,13 @@
  * command works whether or not s3wifi ran first. Every call in it is safe to
  * repeat: nvs_flash_init, esp_netif_init, esp_event_loop_create_default and
  * esp_wifi_init all return ESP_ERR_INVALID_STATE on a second call, which means
- * "already done" - so unlike s3wifi, this command tolerates that code, because
- * here it really is benign.
+ * "already done", so that code is tolerated here.
+ *
+ * This note used to end "unlike s3wifi, this command tolerates that code" -
+ * written when s3wifi treated INVALID_STATE as a failure. s3wifi has used its
+ * own idempotent wrapper (s3_step_idem) for the same calls for a while, so the
+ * contrast no longer exists and the sentence was misleading in the one place a
+ * reader goes to understand the difference between the two commands.
  *
  * Ported from the S31 BSP's s31wifiscan.c.
  */
