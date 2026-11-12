@@ -64,6 +64,17 @@
 #
 #  4. Reboot sections come last, and the checker enforces that itself.
 #
+#  5. The remaining order requirements are declared, not remembered. Each section
+#     that has one carries a line directly under its header:
+#
+#       # order: after <section>
+#       # order: before <section>
+#
+#     and check-docs.ps1 verifies them at parse time, before the board is touched.
+#     A violation used to cost a full 40-minute run to discover - and was found
+#     that way twice, once when `s3fs rm s3fs.txt` was placed ahead of
+#     `s3fs read` and deleted the file that section checks for.
+#
 # Without rules 1 and 2 the s3fsbench ranges failed the first time the full
 # sequence was run, reporting regressions that were really preconditions.
 #
@@ -294,6 +305,7 @@ spiloop: MISO input restored to GPIO\d+
 [spiloop #external after internal]
 # scope: E - depends on the environment (AP, network, jumpers, bus devices)
 #        jumper dependent
+# order: after spiloop internal
 spiloop: spi0 tx -> rx: 00 00 00 00 00 00 00 00
 spiloop: no loopback - tie MOSI to MISO with a jumper to run this test
 
@@ -381,6 +393,7 @@ s3fs read: PASS, \d+ bytes intact after reboot
 [s3fs rm s3fs.txt]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        same file
+# order: after s3fs read
 s3fs rm: removed /storage/s3fs.txt
 
 # Both error paths return a message and a non-zero exit instead of crashing.
@@ -393,6 +406,7 @@ s3fs unmount
 [s3fs erase]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        1 MB partition
+# order: after s3fs rm s3fs.txt
 s3fs: erasing \d+ bytes at 0x[0-9a-f]+
 s3fs: erased; next `s3fs` will format and mount
 
@@ -404,11 +418,13 @@ s3fs: formatted storage
 [s3fs after erase]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        1 MB partition
+# order: after s3fs format
 s3fs: PASS, mounted at /storage, wrote and read back \d+ bytes
 
 [s3fsbench small]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        write counts 152/136 follow from this FAT config; timings vary
+# order: before s3ble
 s3fsbench: create 32 small files -> (\d+) writes \(\d+ B\), (\d+) erases \(\d+ B\)
 ~ 1 == 152
 ~ 2 == 136
@@ -429,6 +445,7 @@ s3fsbench: delete 32 files in (\d+) ms
 [s3fsbench write]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        throughput depends on flash and wear-levelling config
+# order: before s3ble
 s3fsbench: FAT on "storage", \d+-byte sectors, \d+-byte clusters
 s3fsbench: volume \d+ KB total, \d+ KB free
 s3fsbench: measure on a freshly formatted volume
@@ -473,6 +490,7 @@ s3ble: advertising as "([^"]+)" \(vendor 0x[0-9A-Fa-f]{4} \+ standard DIS 0x[0-9
 [s3ble info]
 # scope: U - expected on any ESP32-S3
 #        handle numbers come from the GATT table, not the board
+# order: after s3ble
 s3ble info: up=\d synced=\d advertising=\d conns=\d last_disc=\d+ adv_err=\d+
 # Non-zero handles mean NimBLE really registered the characteristics. A zero
 # would mean one service was skipped while ble_gatts_add_svcs() still reported
@@ -483,11 +501,13 @@ s3ble info: handles vendor chr 0x[0-9a-f]{4}/0x[0-9a-f]{4}, dis 0x[0-9a-f]{4}/0x
 [s3ble deinit]
 # scope: U - expected on any ESP32-S3
 #        clean shutdown
+# order: after s3ble info
 s3ble deinit: PASS, stack down
 
 [s3wifi <ssid> <pass>]
 # scope: E - depends on the environment (AP, network, jumpers, bus devices)
 #        needs a real access point
+# order: after s3ble deinit
 s3wifi: bringing up esp_wifi on the FreeRTOS shim
   nvs_flash_init             ok
   esp_netif_init             ok
@@ -549,6 +569,7 @@ s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 [s3ulp after radios]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        latency after Wi-Fi has been up
+# order: after s3wifi <ssid> <pass>
 s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
 ~ 1 in 50..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)

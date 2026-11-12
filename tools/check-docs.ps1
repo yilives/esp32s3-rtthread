@@ -125,6 +125,58 @@ foreach ($line in Get-Content $expectFile) {
     }
 }
 
+# `# order: after X` / `# order: before X` lines are checked here, at parse time,
+# before the board is opened. A violated order used to be invisible until the run
+# reached that section - 40 minutes in - and was found that way twice. The cost of
+# reading the file twice is nil next to the cost of a wasted run.
+$orderErrs = @()
+$ordered = [ordered]@{}
+foreach ($k in $sections.Keys) { $ordered[$k] = @{ after = @(); before = @() } }
+
+$curSec = $null
+foreach ($line in Get-Content $expectFile) {
+    $t = $line.Trim()
+    if ($t -match '^\[!?(.+)\]$') { $curSec = $Matches[1]; continue }
+    if (-not $curSec) { continue }
+    if ($t -match '^#\s*order:\s*(after|before)\s+(.+)$') {
+        $rel = $Matches[1]
+        $target = $Matches[2].Trim()
+        $ordered[$curSec][$rel] += $target
+    }
+}
+
+$position = @{}
+$idx = 0
+foreach ($k in $sections.Keys) { $position[$k] = $idx; $idx++ }
+
+foreach ($k in $ordered.Keys) {
+    foreach ($target in $ordered[$k].after) {
+        if (-not $position.ContainsKey($target)) {
+            $orderErrs += "[$k] says 'after $target', but there is no such section"
+        } elseif ($position[$k] -lt $position[$target]) {
+            $orderErrs += "[$k] (position $($position[$k])) says 'after $target' (position $($position[$target]))"
+        }
+    }
+    foreach ($target in $ordered[$k].before) {
+        if (-not $position.ContainsKey($target)) {
+            $orderErrs += "[$k] says 'before $target', but there is no such section"
+        } elseif ($position[$k] -gt $position[$target]) {
+            $orderErrs += "[$k] (position $($position[$k])) says 'before $target' (position $($position[$target]))"
+        }
+    }
+}
+
+if ($orderErrs.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  ORDER VIOLATIONS in $expectFile" -ForegroundColor Yellow
+    foreach ($e in $orderErrs) { Write-Host "    $e" -ForegroundColor Yellow }
+    Write-Host ""
+    Write-Host "  These are declared in the file, so the fix is to move a section or to" -ForegroundColor DarkGray
+    Write-Host "  correct a declaration - not to run the suite and see what breaks." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 1
+}
+
 if ($List) {
     Write-Host ""
     Write-Host "sections in $expectFile`:"

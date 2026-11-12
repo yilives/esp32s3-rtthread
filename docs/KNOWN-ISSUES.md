@@ -1712,6 +1712,58 @@ $needsCreds = @{ 's3net example.com' = $true }     # <- 定义了，从没用过
 
 ---
 
+## 33. 顺序约束只写在注释里，违反要跑 40 分钟才发现
+
+### 问题
+
+`expected-output.txt` 的头部列了四条顺序规则，但**只有第四条（reboot 节最后）
+在代码里强制**。其余三条是散文，靠人记住。
+
+这个错误犯过两次，每次都是完整跑一遍才暴露：
+
+| 犯的错 | 症状 | 代价 |
+| --- | --- | --- |
+| `s3fs rm s3fs.txt` 排在 `s3fs read` 之前 | 后者报 `not found - run s3fs first` | 一次完整运行 |
+| `spiloop #external` 排在 `spiloop internal` 之前 | 外部那次的结论没有意义 | 一次完整运行 |
+
+而这类"失败"根本不是 bug——是顺序错了。
+
+### 修法：声明式约束 + 解析时校验
+
+在节头上加一行：
+
+```
+[s3fs rm s3fs.txt]
+# scope: B - ...
+# order: after s3fs read
+```
+
+`check-docs.ps1` 在**打开板子之前**校验全部约束：
+
+```
+  ORDER VIOLATIONS in tools/expected-output.txt
+    [s3fs rm s3fs.txt] (position 29) says 'after s3fs read' (position 30)
+
+  These are declared in the file, so the fix is to move a section or to
+  correct a declaration - not to run the suite and see what breaks.
+```
+
+负向测试：故意把那节挪到 `read` 之前，`-List` 立刻报出两个位置，退出码 1，
+板子完全没被碰过。
+
+### 现在有 10 条
+
+其中两条是"计时的节必须在任何无线起来之前"（`s3fsbench small` / `write` 在
+`s3ble` 之前）。这一条的理由是量化的：Wi-Fi 关联之后同一个 benchmark 从 1055 ms
+变成 4567 ms，4 倍差距会让任何范围断言失去意义。
+
+### 为什么值得做成工具而不是记住
+
+**记不住的东西不该靠记。** 十条约束、50 个节、每轮都在增删——人和工具在这一项上
+的可靠性差距不是一点半点。而检查成本从"40 分钟一次运行"降到"读一遍文件"。
+
+---
+
 ## 已修条目的回归覆盖
 
 读者会问："你说修了，我怎么知道？"这张表回答它。
@@ -1782,3 +1834,4 @@ $needsCreds = @{ 's3net example.com' = $true }     # <- 定义了，从没用过
 | 30 | "优化后"取了最快值；文档间重复且算术不自洽 | 中 | 已修：标注时间不可靠、修正算术、取消重复 |
 | 31 | README 缺"上游要放同级目录"；首次构建有误导性 fatal | 中 | 已修：README/BUILD 补说明，build.ps1 主动提示 |
 | 32 | 无凭据时 `s3wifiscan` 被错误跳过；`$needsCreds` 定义了没用 | 中 | 已修：拆 needsRadio / needsCreds，跳过只看凭据 |
+| 33 | 顺序约束只在注释里，违反要跑 40 分钟才发现 | 中 | 已修：`# order:` 声明 + 解析时校验，10 条约束 |

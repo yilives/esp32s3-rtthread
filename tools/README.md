@@ -250,6 +250,56 @@ RESULT: PASS - 10 iteration(s), no fault markers
 
 `tick` 每轮 +393504 = 393 秒，与每轮实际耗时吻合。
 
+## `check-docs.ps1` 的顺序约束
+
+有些节必须在别的节之前或之后跑，否则会失败——而不是发现 bug。这类约束写在
+`expected-output.txt` 里，**解析时就校验**：
+
+```
+[s3fs rm s3fs.txt]
+# scope: B - ...
+# order: after s3fs read
+```
+
+支持的两种写法：`# order: after <section>` 和 `# order: before <section>`。
+
+违反时，在任何板子被打开之前就报错：
+
+```
+  ORDER VIOLATIONS in tools/expected-output.txt
+    [s3fs rm s3fs.txt] (position 29) says 'after s3fs read' (position 30)
+
+  These are declared in the file, so the fix is to move a section or to
+  correct a declaration - not to run the suite and see what breaks.
+```
+
+### 为什么需要它
+
+这个错误**犯过两次**，每次都是跑完整 40 分钟才发现：
+
+- `s3fs rm s3fs.txt` 排在 `s3fs read` 之前，删掉了那节要检查的文件
+- `spiloop #external` 排在 `spiloop internal` 之前，但外部那次才是证明矩阵被恢复的
+
+现在这些约束是**声明式的**：打开文件就能看到，工具在解析时就报错。
+
+### 当前的 10 条
+
+| 节 | 约束 |
+| --- | --- |
+| `s3fs rm s3fs.txt` | after `s3fs read` |
+| `s3fs erase` | after `s3fs rm s3fs.txt` |
+| `s3fs after erase` | after `s3fs format` |
+| `spiloop #external after internal` | after `spiloop internal` |
+| `s3ble info` | after `s3ble` |
+| `s3ble deinit` | after `s3ble info` |
+| `s3wifi <ssid> <pass>` | after `s3ble deinit` |
+| `s3ulp after radios` | after `s3wifi <ssid> <pass>` |
+| `s3fsbench small` | before `s3ble` |
+| `s3fsbench write` | before `s3ble` |
+
+后两条是"计时的节必须在任何无线起来之前"——Wi-Fi 关联之后同一个 benchmark 从
+1055 ms 变成 4567 ms，4 倍差距会让任何范围断言失去意义。
+
 ## `check-docs.ps1` 的 scope 分类
 
 50 节里每一节在 `expected-output.txt` 中带一行 `# scope:`：
