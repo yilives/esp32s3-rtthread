@@ -21,7 +21,7 @@ s3rt v0.1 - ESP32-S3 / RT-Thread 5.4.0
   tick      : 3009, 1000 Hz
   current   : tshell at priority 20
   counters  : a=4 b=6
-  kernel    : total 130976, used 27000, maximum 31000
+  kernel    : total 130976, used 28816, maximum 32640
   commands  : s3rt tick, s3rt irq, s3rt psram, s3rt led, s3rt pwm, list thread, free
 ```
 
@@ -266,21 +266,31 @@ s3fs read: PASS, 511 bytes intact after reboot
 msh >s3fsbench
 ```
 
-实测数据（1 MB 分区，4 KB 扇区，**无线未起**的基线）：
+输出大致长这样（1 MB 分区，4 KB 扇区，无线未起）：
 
 ```
 s3fsbench: bulk write 256 KB -> 79 writes (290944 B), 71 erases (290816 B)
 s3fsbench: write  256 KB in 1045 ms -> 244 KB/s
 s3fsbench: read   256 KB in 30 ms -> 8533 KB/s
-s3fsbench: create 32 x 64 B in 5281 ms (6 files/s, 165 ms each)
-s3fsbench: delete 32 files in 3512 ms (109 ms each)
+s3fsbench: create 32 x 64 B in 8766 ms (3 files/s, 274 ms each)
+s3fsbench: delete 32 files in 4504 ms (140 ms each)
 ```
+
+**看形状就行，别对着数字抠。** 时间值在同一台设备上能差 40%——因为大头是
+SPI NOR 的物理擦除耗时。真正稳定且有诊断价值的是**写次数和擦除次数**，它们由
+FAT 算法决定，每次测量完全一致。
+
+> **这里不抄完整的性能表。** 权威数据在
+> [FILESYSTEM.md](FILESYSTEM.md) 的「性能：实测数据与调优」一节，包括优化前后的
+> 对比、每个优化的作用、以及**哪些数字可信哪些不可信**。
+>
+> 抄一份过来会有两个后果：两份可能不一致，而且过一段时间必然不一致。**一份事实
+> 只该有一个来源。**
 
 **基线要说清楚。** 如果 Wi-Fi 已经跑过（哪怕 `s3fsbench` 会自己把它停掉），
 同一条命令是 4474 ms / 57 KB/s —— 数字差 4 倍，两个都是对的，只是测的前提不同。
-详见 [FILESYSTEM.md](FILESYSTEM.md) 的「无线栈起来之后」一节。
 
-**小文件慢是正常的**，原因和调优见 [FILESYSTEM.md](FILESYSTEM.md)。
+**小文件慢是正常的**，原因和调优同样在 [FILESYSTEM.md](FILESYSTEM.md)。
 
 ### 4.5 目录操作
 
