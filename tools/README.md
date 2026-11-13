@@ -24,6 +24,7 @@
 | `list-shim-api.ps1` | **列出 FreeRTOS 兼容层实际实现的 API**（见下）|
 | `find-duplication.ps1` | **找出写了两遍的逻辑**（见下）|
 | `soak-docs.ps1` | **单次启动内重复跑工作负载，看有无漂移**（见下）|
+| `stress-random.ps1` | **随机顺序发命令，看状态机是否错乱**（见下）|
 | `verify-doc-links.ps1` | **检查文档交叉引用是否还有效**（见下）|
 | `verify-doc-facts.ps1` | **核对文档里的结构性数字**（见下）|
 | `verify-doc-symbols.ps1` | **核对文档引用的符号名是否存在**（见下）|
@@ -477,6 +478,82 @@ s3fs rm: removed /storage/s3fs.txt
 
 分类不是说 `[B]` 的那些不可信——它们在这块板子上是最有信息量的。它说的是
 **一个红色结果意味着什么**，那才是新读者真正关心的问题。
+
+## `stress-random.ps1`：随机顺序
+
+```powershell
+.\tools\stress-random.ps1                        # 150 条
+.\tools\stress-random.ps1 -Count 400
+.\tools\stress-random.ps1 -Seed 12345            # 复现某次运行
+.\tools\stress-random.ps1 -WifiSsid <ssid> -WifiPass <pass>
+```
+
+**预期**：
+
+```
+  ran 200 command(s), 0 fault(s)
+
+  idle-state dram : 96880 -> 95144 (-1736 bytes over 200 commands)
+  (both readings taken with BLE down, ULP stopped and the volume unmounted)
+  a fall here is a candidate leak: same state, less memory
+  it works out to 8.7 bytes per command - rerun with -Count 4x this
+  to see whether it scales; a fixed offset will not.
+  psram free      : 8386156 -> 8386156
+
+RESULT: PASS - 200 command(s), no faults
+```
+
+### 和 `soak-docs.ps1` 的区别
+
+`soak-docs.ps1` 重复**同一个固定序列**。这个脚本**随机抽**——真实使用不是按顺序的。
+
+命令池按前置条件分三层（无状态 / 需要挂载 / 需要网络），BLE 和 Wi-Fi 用一个小状态机
+维持"BLE 先于 Wi-Fi"的约束（KNOWN-ISSUES 12）。
+
+**故意排除**会重启板子或破坏卷的命令：`s3wdt hang` 会复位，`s3fs erase` / `format`
+会让后续所有文件系统命令因为"卷是空的"而失败——那不是缺陷。
+
+**故意包含**五个"未知子命令"（`s3rt bogus` 等）：它们走的是 usage 路径，那也是代码。
+
+### 两个测量上的坑，都是我踩的
+
+**坑 1：起始读数和结束读数不在同一个状态。**
+
+第一版直接比开机读数和结束读数，报出 `-68.4%`——看起来像灾难性泄漏。实际是那次运行
+**结束时 BLE 正好在跑**，占了 57 KB。同理，另一次运行结束时报 `+9368`，因为那次
+结束时卷是卸载状态、释放了 9.4 KB 的 wear-levelling 缓冲。
+
+**两个数都只反映结束时的状态，不反映泄漏。**
+
+修法：**在相同的状态下比较**。开始前把 BLE 停掉、ULP 停掉、卷卸载，取基线；结束时
+做同样的事再取一次。
+
+**坑 2：负的差值不一定是泄漏。**
+
+改成同状态对比后报 `-1736 字节`。这可能是泄漏，也可能是一次性分配。**判据是它随
+长度增长吗**：
+
+| 命令数 | 差值 |
+| --- | --- |
+| 30 | -1736 |
+| 200 | -1736 |
+
+**完全相同。** 泄漏会随长度增长；固定偏移不会。所以这是一次性分配。
+
+脚本现在把这个判据写进输出，而不是让人自己去跑两遍对比。
+
+### 实测结论
+
+150 / 200 / 40 条随机命令，多个种子：**零 Guru、零断言、零 malloc 失败**。
+
+内存振荡完全对称：
+
+```
+s3ble        : 84048 -> 27068  (-56980)   起 BLE 占 57 KB
+s3ble deinit : 27068 -> 84048  (+56980)   拆掉完全归还
+```
+
+七个周期，每次都是精确的 56980 字节。**启停对称，没有泄漏。**
 
 ## `verify-doc-links.ps1`：断链检查
 
