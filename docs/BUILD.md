@@ -17,20 +17,32 @@ Linux/macOS 同理，只需把`.ps1`换成`.sh`。
 | `CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM` | 启用 FreeRTOS API 兼容层 |
 | `CONFIG_IDF_RTTHREAD_HEAP_SIZE` | RT-Thread 内核堆大小（独立于 IDF 的 heap_caps） |
 
-这些来自一个 fork。你可以：
-
-**选项 A：用现成的 fork（推荐）**
+这些来自一个 fork。**必须用这个 fork 的确切提交**——本仓库的 IDF 补丁是针对它的
+基线写的，换一个 IDF 树补丁打不上。
 
 ```powershell
-git clone -b rtt-s31 https://github.com/RT-Thread-packages/esp-idf.git <IDF_PATH>
+git clone https://github.com/yilives/esp-idf-rtt-c5.git <IDF_PATH>
 cd <IDF_PATH>
-git checkout <commit>
+git checkout 6b6076c8e20206f3e627bf0ab6791bdebf9e7c27
 ```
 
-**选项 B：自己给官方 IDF 打补丁**
+仓库名里的 `c5` 是历史原因：这个 fork 起初为 ESP32-C5 做的，后来扩展到了
+S3/S31 和 C3/C6。**支持 S3 的是 `main` 分支上的这个提交。**
 
-需要一个定义这三个 Kconfig 和对应 CMake 分支的 patch。当前仓库没有单独提供
-（它假定你在用上面的 fork），如果你需要，提 issue。
+> **不要用 `RT-Thread-packages/esp-idf`。** 它的 `rtt-dev` 分支缺少本移植需要的
+> S3 启动、双核 flash 握手和 FreeRTOS shim 集成。实测在本仓库 `0001` 补丁上
+> `git apply --check` 会失败（`esp_libc/src/locks.c`、`esp_system/esp_ipc.c`、
+> `freertos/port_systick.c`、`spi_flash/cache_utils.c` 四个文件）。
+>
+> 早先的文档写的是 `git clone -b rtt-s31 https://github.com/RT-Thread-packages/esp-idf.git`，
+> **那个分支不存在**（`ls-remote` 只返回 `master`、`rtt-dev`、`rtt-dev-2024`）。
+> 照做的人会卡在 clone 这一步。
+
+### 为什么不提供独立的 IDF patch
+
+一个能把官方 IDF 变成这个 fork 的等价补丁需要覆盖 S3 的启动、中断、双核 flash
+握手和 Kconfig 分支，那是这个 fork 本身的工作量。**这里只提供叠加在 fork 之上的
+那部分**（`esp-idf/patches/0001-*.patch`，17 个文件）。
 
 ### 装工具链
 
@@ -55,10 +67,16 @@ cd <IDF_PATH>
 ## 2. 准备 RT-Thread
 
 ```powershell
-git clone --depth 1 https://github.com/RT-Thread/rt-thread.git <RTT_ROOT>
+# 不要加 --depth 1：下面要 checkout 的是一个历史提交，浅克隆里没有它。
+git clone https://github.com/RT-Thread/rt-thread.git <RTT_ROOT>
 cd <RTT_ROOT>
 git checkout 9e6dec3b14f5bf5514b0da829736c2485c38b0a7   # 5.4.0
 ```
+
+> **`--depth 1` 与 `checkout <历史提交>` 不能同时用。** 实测在
+> `git clone --depth 1` 的树里 `git cat-file -e 9e6dec3b...` 返回非零——
+> 那个提交根本不在对象库里，`checkout` 必然失败。要节省带宽可以用
+> `--filter=blob:none`，它保留历史但按需取文件内容。
 
 ### 应用本仓库的改动
 
@@ -82,8 +100,11 @@ git apply <本仓库>\rt-thread\patches\0001-kernel-smp-hooks.patch
 Copy-Item <本仓库>\esp-idf\components\rtthread <IDF_PATH>\components\ -Recurse
 cd <IDF_PATH>
 git apply <本仓库>\esp-idf\patches\0001-idf-core-smp-hooks.patch
-git apply <本仓库>\esp-idf\patches\0002-freertos-shim-iram.patch
 ```
+
+> **只有一个 IDF 补丁。** 早先这里还写着 `0002-freertos-shim-iram.patch`，
+> **那个文件不存在**。把 shim 的 ISR 路径放进 IRAM 的做法改成了链接片段
+> `esp-idf/components/rtthread/linker.lf`，它随组件目录一起复制，不需要单独打补丁。
 
 ### 内核补丁改了什么
 

@@ -64,13 +64,17 @@ cd esp32s3-rtthread
 
 ### 2. 准备上游
 
-**先把上游放到仓库的同级目录。** `tools/env.ps1` 按这个顺序找：
+**先准备两棵上游树。** 具体地址和提交号在
+[docs/BUILD.md](docs/BUILD.md) 的「准备 ESP-IDF」和「准备 RT-Thread」两节，
+**照抄那里的命令**——IDF 那个 fork 的仓库名和分支名反直觉，写在这里容易抄错。
+
+然后按这个目录布局放好，`tools/env.ps1` 按这个顺序找：
 
 ```
 <你的目录>/
 ├── esp32s3-rtthread/     <- 刚克隆的
 ├── rt-thread/            <- 上游 RT-Thread
-└── esp-idf-rtt/          <- IDF fork
+└── esp-idf-rtt/          <- IDF fork（yilives/esp-idf-rtt-c5，main）
 ```
 
 找不到会报 `IDF_PATH is not set and no ESP-IDF checkout was found next to this

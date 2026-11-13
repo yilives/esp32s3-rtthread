@@ -51,6 +51,52 @@ if (-not (Test-Path (Join-Path $RtThreadPath '.git'))) {
     Fail "RTT_ROOT '$RtThreadPath' is not a git repository; the patches need git apply"
 }
 
+# ------------------------------------------------------- upstream identity --
+#
+# The IDF side is not "any ESP-IDF v6.1" - it is one fork at one commit, and the
+# patch in this repository is written against that baseline. Handing this script
+# RT-Thread-packages/rtt-dev instead fails at `git apply --check` with four files
+# and no explanation of why, which is exactly what a reader reported.
+#
+# So check the baseline up front and say what the right one is, rather than
+# letting them read a patch rejection.
+$idfExpected = '6b6076c8e20206f3e627bf0ab6791bdebf9e7c27'
+$idfRemote = 'https://github.com/yilives/esp-idf-rtt-c5.git'
+
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $idfHead = (& git -C $IdfPath rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $idfHead) {
+        $idfHead = $idfHead.Trim()
+        if ($idfHead -ne $idfExpected) {
+            # Not fatal on its own - the patch check below is the real test - but
+            # an unexpected baseline is worth stating before anything is written.
+            & git -C $IdfPath merge-base --is-ancestor $idfExpected HEAD 2>$null | Out-Null
+            $isAncestor = ($LASTEXITCODE -eq 0)
+            Write-Host ""
+            Write-Host "  NOTE: IDF tree is at $idfHead" -ForegroundColor Yellow
+            Write-Host "        this repository targets $idfExpected" -ForegroundColor Yellow
+            Write-Host "        on $idfRemote (branch main)" -ForegroundColor Yellow
+            if (-not $isAncestor) {
+                Write-Host "        and that commit is not an ancestor of the tree you gave," -ForegroundColor Yellow
+                Write-Host "        so the IDF patch will almost certainly fail below." -ForegroundColor Yellow
+            }
+            Write-Host ""
+        }
+    }
+
+    $rttHead = (& git -C $RtThreadPath rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $rttHead) {
+        $rttHead = $rttHead.Trim()
+        $rttExpected = '9e6dec3b14f5bf5514b0da829736c2485c38b0a7'
+        if ($rttHead -ne $rttExpected) {
+            Write-Host ""
+            Write-Host "  NOTE: RT-Thread tree is at $rttHead" -ForegroundColor Yellow
+            Write-Host "        this repository targets $rttExpected (v5.4.0)" -ForegroundColor Yellow
+            Write-Host ""
+        }
+    }
+}
+
 # --------------------------------------------------------- patch dry run ---
 #
 # All patches are checked BEFORE anything is written. Applying three of four and
