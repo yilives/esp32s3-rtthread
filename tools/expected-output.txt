@@ -574,7 +574,11 @@ s3wifiscan: \d+ AP\(s\), all on channels 1\.\.14 = the 2\.4 GHz band
 # scope: E - depends on the environment (AP, network, jumpers, bus devices)
 #        needs internet access
 s3net: resolving example.com
-  gethostbyname          ok -> \d+\.\d+\.\d+\.\d+
+# The resolved address must not be 0.0.0.0. The generic quad pattern matched
+# 0.0.0.0 just as happily as a real address, which is how a bug that printed the
+# wrong variable survived a full green run: lookup succeeded, connect succeeded,
+# and the line read "ok -> 0.0.0.0".
+  gethostbyname          ok -> ([1-9]\d{0,2})\.\d{1,3}\.\d{1,3}\.\d{1,3}
   socket                 ok \(\d+\)
   connect                ok \(0\)
   send                   ok \(\d+\)

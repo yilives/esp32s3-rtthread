@@ -166,8 +166,24 @@ static int cmd_s3net(int argc, char **argv)
             }
 
             rt_memcpy(&addr.sin_addr, he->h_addr_list[0], sizeof(addr.sin_addr));
-            rt_kprintf("  %-22s ok -> " IPSTR "\n", "gethostbyname",
-                       IP2STR(&gw_addr));
+            /*
+             * Print the address that was just resolved, from a local copy.
+             *
+             * This used to print gw_addr - the variable the no-host branch sets -
+             * which is zero here, so a successful lookup reported "ok -> 0.0.0.0"
+             * while connect() used the correct address and succeeded. The output
+             * said DNS had failed when it had not.
+             *
+             * The local copy exists for the reason given above the no-host branch:
+             * IP2STR wants an esp_ip4_addr_t and &addr.sin_addr is a struct in_addr,
+             * and reading one through a pointer to the other is a strict-aliasing
+             * violation that -O2 rejects.
+             */
+            {
+                esp_ip4_addr_t resolved = { .addr = addr.sin_addr.s_addr };
+                rt_kprintf("  %-22s ok -> " IPSTR "\n", "gethostbyname",
+                           IP2STR(&resolved));
+            }
         }
     }
 
