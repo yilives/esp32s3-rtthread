@@ -734,6 +734,20 @@ static int cmd_s3fs(int argc, char **argv)
         return -1;
     }
 
+    /*
+     * Anything else is a typo, and the default below is not harmless: `s3fs`
+     * with an unrecognised subcommand still mounts, writes a file and reads it
+     * back. `s3fs bogus` therefore looked like it worked, and did work - just not
+     * the thing that was asked for. Same shape in s3ble (starts the radio) and
+     * s3rt (prints status). Say so instead.
+     */
+    if (argc >= 2)
+    {
+        rt_kprintf("s3fs: unknown subcommand '%s'\n", argv[1]);
+        rt_kprintf("usage: s3fs [ls|cat <name>|rm <name>|read|unmount|erase|format]\n");
+        return -1;
+    }
+
     /* Reopen rather than rewind: that is what proves the data reached the
      * filesystem, not just a buffer in the stdio layer. */
     f = fopen(path, "r");

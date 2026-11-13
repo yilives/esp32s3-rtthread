@@ -711,6 +711,22 @@ static int cmd_s3rt(int argc, char **argv)
         return 0;
     }
 
+    /*
+     * Unknown subcommand: refuse rather than print status.
+     *
+     * Falling through was not dangerous here, but it was confusing: `s3rt bogus`
+     * printed a plausible status block and made it look as if `bogus` were a
+     * valid verb. s3rt pwm 999999999 was worse - the period argument is ignored
+     * by the pwm branch, so an out-of-range value ran the normal sweep and looked
+     * accepted.
+     */
+    if (argc >= 2)
+    {
+        rt_kprintf("s3rt: unknown subcommand '%s'\n", argv[1]);
+        rt_kprintf("usage: s3rt [tick|irq|irqlat|psram|led|pwm|key [pulse]]\n");
+        return -1;
+    }
+
     rt_kprintf("s3rt v0.1 - ESP32-S3 / RT-Thread %d.%d.%d\n",
                RT_VERSION_MAJOR, RT_VERSION_MINOR, RT_VERSION_PATCH);
     rt_kprintf("  tick      : %u, %d Hz\n",

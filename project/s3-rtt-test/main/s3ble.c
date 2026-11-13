@@ -715,6 +715,20 @@ static int cmd_ble(int argc, char **argv)
     }
 #endif /* CONFIG_BT_NIMBLE_ENABLED */
 
+    /*
+     * Unknown subcommand: refuse rather than start the radio.
+     *
+     * The fall-through below brings up the controller and starts advertising, so
+     * `s3ble bogus` used to switch the radio on and report success - silently
+     * doing something expensive and different from what was asked.
+     */
+    if (argc >= 2)
+    {
+        rt_kprintf("s3ble: unknown subcommand '%s'\n", argv[1]);
+        rt_kprintf("usage: s3ble [info|adv [off]|off|deinit]\n");
+        return -1;
+    }
+
     rt_kprintf("s3ble: bringing up the BLE controller on the FreeRTOS shim\n");
 
     /* PHY calibration lives in NVS. Not fatal - the PHY falls back to a full

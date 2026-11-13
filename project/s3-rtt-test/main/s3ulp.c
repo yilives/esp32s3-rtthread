@@ -347,6 +347,12 @@ static int cmd_s3ulp_worker(int argc, char **argv)
         return 0;
     }
 
+    if (argc >= 2)
+    {
+        rt_kprintf("s3ulpw: unknown subcommand '%s' (only 'stop')\n", argv[1]);
+        return -1;
+    }
+
     if (s_ulp_worker != RT_NULL)
     {
         rt_kprintf("s3ulpw: already running (%u kicks so far)\n",
@@ -426,6 +432,14 @@ static int cmd_s3ulp(int argc, char **argv)
     {
         s_ulp_stopped = RT_FALSE;
         return s3_ulp_load_and_run(RT_TRUE) == RT_EOK ? 0 : -1;
+    }
+
+    /* Unknown subcommand: the fall-through below loads and runs the co-processor,
+     * so `s3ulp bogus` used to start it. */
+    if (argc >= 2)
+    {
+        rt_kprintf("s3ulp: unknown subcommand '%s' (start|stop)\n", argv[1]);
+        return -1;
     }
 
     if (!s_ulp_running)

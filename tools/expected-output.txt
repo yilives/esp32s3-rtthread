@@ -135,6 +135,38 @@
 # most informative ones on the board they were measured on. It is a claim about
 # what a red result means, which is the question a new reader actually has.
 
+# Unknown subcommands must be refused, not silently mapped onto the default
+# action. Before this, `s3fs bogus` mounted, wrote a file and read it back;
+# `s3ble bogus` started the radio; `s3ulp bogus` ran the co-processor; `s3rt bogus`
+# printed a status block. All four "worked", none did what was asked.
+[s3rt bogus]
+# scope: U - expected on any ESP32-S3
+#        input validation, nothing to do with the board
+s3rt: unknown subcommand 'bogus'
+usage: s3rt \[tick\|irq\|irqlat\|psram\|led\|pwm\|key \[pulse\]\]
+
+[s3fs bogus]
+# scope: U - expected on any ESP32-S3
+#        input validation
+s3fs: unknown subcommand 'bogus'
+usage: s3fs \[ls\|cat <name>\|rm <name>\|read\|unmount\|erase\|format\]
+
+[s3ble bogus]
+# scope: U - expected on any ESP32-S3
+#        input validation
+s3ble: unknown subcommand 'bogus'
+usage: s3ble \[info\|adv \[off\]\|off\|deinit\]
+
+[s3ulp bogus]
+# scope: U - expected on any ESP32-S3
+#        input validation
+s3ulp: unknown subcommand 'bogus'
+
+[s3ulpw bogus]
+# scope: U - expected on any ESP32-S3
+#        input validation
+s3ulpw: unknown subcommand 'bogus'
+
 [s3rt]
 # scope: U - expected on any ESP32-S3
 #        kernel counters, thread states, heap total - no pins
@@ -456,7 +488,7 @@ s3fs: erased; next `s3fs` will format and mount
 #        1 MB partition
 s3fs: formatted storage
 
-[s3fs after erase]
+[s3fs #after erase]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        1 MB partition
 # order: after s3fs format
@@ -624,7 +656,7 @@ s3ulp: PASS, ULP completed in (\d+) us, result=0x[0-9a-f]+
 ~ 1 in 100..3000
 s3ulp: PASS, CMD_DOUBLE returned 2 x CMD_COUNT \(0x[0-9a-f]+\)
 
-[s3ulp after radios]
+[s3ulp #after radios]
 # scope: B - tied to this board's pins, partition or measured numbers
 #        latency after Wi-Fi has been up
 # order: after s3wifi <ssid> <pass>
