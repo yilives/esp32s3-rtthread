@@ -430,7 +430,19 @@ s3fs ls: 0 entry\(ies\)
 [s3fs unmount]
 # scope: U - expected on any ESP32-S3
 #        unmount reports success
-s3fs unmount
+#
+# The success path used to print nothing at all - the assertion was the bare
+# command echo, which passes for a command that never ran. Found by running it
+# twice: the second call said "not mounted" while the first said nothing.
+s3fs: unmounted /storage
+
+# Second call: already unmounted, and it must say so rather than crash or repeat
+# the same message. This is the idempotency check that found the silence above.
+[s3fs unmount #again]
+# scope: U - expected on any ESP32-S3
+#        unmounting something already unmounted
+# order: after s3fs unmount
+s3fs: not mounted
 
 [s3fs erase]
 # scope: B - tied to this board's pins, partition or measured numbers

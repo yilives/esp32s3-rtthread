@@ -2032,6 +2032,71 @@ gethostbyname          ok -> ([1-9]\d{0,2})\.\d{1,3}\.\d{1,3}\.\d{1,3}
 
 ---
 
+## 39. `s3fs unmount` 成功时什么都不打印（幂等性排查发现）
+
+### 怎么发现的
+
+第 22 条记着"三个调用两次才暴露的 bug"，那一轮之后**大部分命令再没跑过第二次**。
+这轮把几个关键命令连跑两遍，`s3fs unmount` 出现了这个：
+
+```
+msh >s3fs unmount
+msh >                          <- 第一次：什么都没有
+msh >s3fs unmount
+s3fs: not mounted              <- 第二次：明确报告
+```
+
+**成功的路径完全静默。** 用户看到的只有提示符，无法区分"卸载成功"和"命令没被接收"。
+
+### 为什么这是缺陷而不是风格
+
+同一个命令族里其它状态变更都有输出：
+
+```
+s3fs format  -> s3fs: formatted storage
+s3fs erase   -> s3fs: erased; next `s3fs` will format and mount
+s3fs rm      -> s3fs rm: removed /storage/s3fs.txt
+s3fs unmount -> (无)
+```
+
+而且**检查器原来对这一节的断言就是命令回显本身**：
+
+```
+[s3fs unmount]
+s3fs unmount        <- 这就是全部断言
+```
+
+它通过，但只证明了命令被回显——**一个什么都没做的命令也会通过**。这和第 37、38 条
+是同一个毛病：断言太弱，而弱断言的表现是"从不失败"。
+
+### 修法
+
+成功路径加一行 `s3fs: unmounted /storage`，断言改成它，并新增第二节验证幂等：
+
+```
+[s3fs unmount #again]
+s3fs: not mounted
+```
+
+### 顺带修了元数据校验的一个真误报
+
+给这一节写注释时写了 "Found by running it twice: the second call said ..."，
+而元数据校验把 `twice` 当成了键名：
+
+```
+[s3fs unmount] has '# twice:' - not a known key (known: scope, order)
+```
+
+第 34 条处理过同类误报（`# apart:`），当时的办法是**只认节头块内的键**。但这次
+散文就在节头块里，位置区分不了。
+
+改成**按编辑距离判断**：只有某个单词与 `scope` / `order` 相差 ≤2 个字符时才报错
+（`scpoe` 报、`orde` 报、`twice` 和 `purpose` 不报）。四种情况都验证过。
+
+**判据从"形状"换成了"接近已知键"，因为纯形状永远分不开 `# twice:` 和 `# scope:`。**
+
+---
+
 ## 已修条目的回归覆盖
 
 读者会问："你说修了，我怎么知道？"这张表回答它。
@@ -2108,3 +2173,4 @@ gethostbyname          ok -> ([1-9]\d{0,2})\.\d{1,3}\.\d{1,3}\.\d{1,3}
 | 36 | 失败报告不说是哪个 pattern 失败 | 中 | 已修：序号 + 匹配行 + closest line |
 | 37 | DNS 成功却打印 0.0.0.0；断言接受这个值 | 中 | 已修：打印真实地址 + 断言首段非零 |
 | 38 | 另七处断言对 0 也成立，含 `CPUS_NR=1` | **高** | 已修：全部要求非零，七组负向测试 |
+| 39 | `s3fs unmount` 成功时静默；断言只是命令回显 | 中 | 已修：加输出 + 幂等节；元数据校验改编辑距离 |

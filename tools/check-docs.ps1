@@ -166,7 +166,27 @@ foreach ($line in Get-Content $expectFile) {
 
     $kind = $Matches[1].ToLower()
     if ($KnownMeta -notcontains $kind) {
-        $metaErrs += "[$metaOwner] has '# ${kind}:' - not a known key (known: $($KnownMeta -join ', '))"
+        # A word followed by a colon in the header block is usually prose: this
+        # section's own comment said "Found by running it twice: the second call
+        # said ..." and "twice" parsed as a key. Flagging every such word made the
+        # check unusable.
+        #
+        # Only a near-miss of a real key is worth an error, because that is the
+        # case the check exists for - "# scpoe:" is two edits from "scope" and
+        # would otherwise be silently ignored as a comment.
+        $near = $false
+        foreach ($k in $KnownMeta) {
+            if ([Math]::Abs($k.Length - $kind.Length) -gt 2) { continue }
+            # Cheap edit-distance bound: count differing characters in order.
+            $d = 0
+            $min = [Math]::Min($k.Length, $kind.Length)
+            for ($c = 0; $c -lt $min; $c++) { if ($k[$c] -ne $kind[$c]) { $d++ } }
+            $d += [Math]::Abs($k.Length - $kind.Length)
+            if ($d -le 2) { $near = $true; break }
+        }
+        if ($near) {
+            $metaErrs += "[$metaOwner] has '# ${kind}:' - looks like a typo of one of: $($KnownMeta -join ', ')"
+        }
         continue
     }
 

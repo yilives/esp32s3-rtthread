@@ -289,6 +289,15 @@ static int s3_fs_unmount(void)
 
     s_fs_wl = WL_INVALID_HANDLE;
     s_fs_mounted = RT_FALSE;
+
+    /*
+     * Say so. This path used to return silently, so a successful unmount printed
+     * nothing but the shell prompt - indistinguishable from a command that was
+     * never received. Every other state-changing s3fs subcommand reports its
+     * result: `format`, `erase`, `rm`. Found by running `s3fs unmount` twice: the
+     * first call was silent, the second said "not mounted".
+     */
+    rt_kprintf("s3fs: unmounted %s\n", S3FS_MOUNT_POINT);
     return RT_EOK;
 }
 
