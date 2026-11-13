@@ -2308,10 +2308,46 @@ assertion failed
 
 已回退。现在的状态是：**5 秒的读写下限有效，握手没有上限**，19 秒是 lwIP 的行为。
 
-### 这条留在这里而不是标"已修"
+### `select()` 为什么崩：查到了一个具体线索
 
-因为**真正该修的是 shim 的 `select()`**，那是一个独立的、比这个命令大得多的问题。
-记录清楚比仓促加一个绕过方案有用。
+第 72 轮试图修 shim 的 `select()`，没有修成，但把范围缩到了一个数字上。
+
+最小复现：**单独调一次 `select()`（不 `connect`）就崩**，所以和 TCP 无关。
+
+```
+(rt_object_get_type(&sem->parent.parent) == RT_Object_Class_Semaphore)
+assertion failed at function:_rt_sem_take, line number:576
+```
+
+在 `_rt_sem_take` 入口加探针，打出传进来的指针：
+
+```
+[_rt_sem_take] bad sem 0x46544970 type=0 caller=0x8038d6a0
+```
+
+**`0x46544950` 就是 `FT_IPC_MAGIC`（"FTIP"）。传入的指针是它加 `0x20`。**
+
+`0x20` 是 `struct ft_ipc` 里 `available` 字段的偏移。所以有人把一个 stub 当作
+`struct ft_ipc` 用了——取 `&stub->available`——而 stub 的地址本该是调用者提供的
+缓冲区地址，不是 magic 的值。
+
+换句话说：**某个解析路径把 `ft_ipc_resolve()` 的输入当成了输出**，或者反过来。
+stub 的布局是 `{ magic, real }`，解析时读 magic 判断、再取 real；如果某处直接用了
+stub 本身当作 `struct ft_ipc *`，那么 `->available` 就落在 magic 之后 0x20 处，
+正好是观察到的值。
+
+`caller=0x8038d6a0` 解析不出符号（ROM 地址），所以它来自 ROM 里的回调路径，
+不是我们的代码。
+
+### 没有继续往下修，是因为
+
+这已经超出"一个命令的缺陷"的范围：要么 `select()` 的某条路径绕过了 handle
+解析，要么 lwIP 的 `sys_sem_t`（`StaticSemaphore_t` 内嵌结构）和 shim 的 stub
+语义不兼容。两种情况都需要改动 shim 的核心约定，并且要重新验证所有
+`xSemaphoreCreateStatic` 的使用者。
+
+**探针已全部移除，工作树与 HEAD 一致，59 节全绿。** 线索留在这一条里，
+下次动手时从 `0x46544970` 这个数字开始。
 
 ---
 
