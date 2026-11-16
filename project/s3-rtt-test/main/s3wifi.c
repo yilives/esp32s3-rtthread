@@ -713,9 +713,38 @@ static int cmd_wifi(int argc, char **argv)
 
     if (s_wifi_got_ip == 0)
     {
+        esp_netif_dhcp_status_t dhcpc = ESP_NETIF_DHCP_INIT;
+        const char *dhcpc_name = "?";
+
+        /* Where the failure actually is.
+         *
+         * "connected=1, no IP" has two very different causes and this message
+         * used to conflate them:
+         *
+         *   STARTED  the DHCP client is running and the AP is not answering -
+         *            signal, AP config, or the network, none of which is in this
+         *            image
+         *   STOPPED  the client never started - that would be a port bug
+         *
+         * Querying the state turns "the WiFi is broken" into a fact. It answered
+         * this exact question on the board: STARTED at rssi -80, which is why
+         * the retries in KNOWN-ISSUES 45 are about the AP and not the shim.
+         */
+        if (netif != RT_NULL && esp_netif_dhcpc_get_status(netif, &dhcpc) == ESP_OK)
+        {
+            switch (dhcpc)
+            {
+            case ESP_NETIF_DHCP_INIT:    dhcpc_name = "INIT (not started)"; break;
+            case ESP_NETIF_DHCP_STARTED: dhcpc_name = "STARTED (waiting for AP)"; break;
+            case ESP_NETIF_DHCP_STOPPED: dhcpc_name = "STOPPED"; break;
+            default:                     dhcpc_name = "INVALID"; break;
+            }
+        }
+
         rt_kprintf("s3wifi: FAIL after %d ms: connected=%d, retries=%d, "
                    "last reason=%d\n",
                    waited, s_wifi_connected, s_wifi_retries, s_wifi_fail_reason);
+        rt_kprintf("s3wifi: dhcp client %s\n", dhcpc_name);
         rt_kprintf("s3wifi: reason 15 = 4WAY_HANDSHAKE_TIMEOUT, 205 = AUTH_FAIL, "
                    "both mean a wrong password;\n");
         rt_kprintf("s3wifi: 201 = NO_AP_FOUND means the SSID is not visible "
