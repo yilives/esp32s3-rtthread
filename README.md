@@ -92,6 +92,14 @@ repository`。也可以直接设 `IDF_PATH` / `RTTHREAD_ROOT` 环境变量指向
 3. 把 `esp-idf/components/rtthread/` 复制进 IDF，并按顺序打两个 IDF 补丁
    （`0000-idf-platform-s3.patch` → `0001-idf-core-smp-hooks.patch`）
 
+**IDF 还要补 9 个子模块**——`rtt-dev` 分支没声明它们，缺了第一次 configure 就失败：
+
+```powershell
+.\tools\fill-idf-submodules.ps1 -IdfPath ..\esp-idf-rtt
+```
+
+见 [docs/BUILD.md](docs/BUILD.md) 的「子模块」一节。
+
 > 手工做也可以，见 [docs/BUILD.md](docs/BUILD.md)。
 
 ### 3. 构建

@@ -92,4 +92,5 @@ set(RTTHREAD_ROOT "${RTTHREAD_ROOT}" CACHE PATH "RT-Thread checkout" FORCE)
 message(STATUS "s3-rtt-test: RTTHREAD_ROOT=${RTTHREAD_ROOT}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
 project(s3_rtt_test)

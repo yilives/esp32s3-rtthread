@@ -50,17 +50,54 @@ S3 相关的部分（另外几个芯片的 `ld/esp32c*.in` 和 `esp_wifi/esp32c5
 产物验证过：`rtt-dev` + `0000` + `0001` + 本仓库的 `components/rtthread`，
 与那棵移植树逐文件比对，**S3 相关的 13 个关键文件全部一致**。
 
-### 子模块
+### 子模块（两步，都要做）
 
-`git submodule update --init --recursive` 必须在第一次构建前跑一次。缺了 lwip、
-mbedtls、nimble 这些子模块，CMake 会在 `component.cmake:321` 报
-`Include directory ... is not a directory`——错误指向的是 unity 或 cmock 的 include
-路径，和真正缺的东西无关。
+**第一步**，初始化 `rtt-dev` 自己声明的 15 个子模块：
 
-另外两个目录不是子模块，是上游私有的预编译件：`components/unity/unity` 和
-`components/cmock/CMock`。缺了同样会报那个 include 错误。它们在本仓库的
-`.git/info/exclude` 里出现过，但**没有随仓库分发**——如果你的树里没有，从任何完整的
-IDF 安装里拷一份即可。
+```powershell
+cd <IDF_PATH>
+git submodule update --init --recursive
+```
+
+**第二步**，补上 `rtt-dev` **没有声明**的 9 个：
+
+```powershell
+cd <本仓库>
+.\tools\fill-idf-submodules.ps1 -IdfPath <IDF_PATH>
+```
+
+#### 为什么需要第二步
+
+`rtt-dev` 声明 15 个子模块，官方 IDF 声明 24 个。少的这 9 个：
+
+```
+components/unity/unity
+components/cmock/CMock
+components/spiffs/spiffs
+components/protobuf-c/protobuf-c
+components/openthread/openthread
+components/openthread/lib
+components/bootloader/subproject/components/micro-ecc/micro-ecc
+components/bt/controller/lib_esp32c2/esp32c2-bt-lib
+components/bt/controller/lib_esp32h2/esp32h2-bt-lib
+```
+
+它们的组件 CMakeLists 仍然引用这些路径，所以第一次 configure 就死在
+
+```
+CMake Error at tools/cmake/component.cmake:321 (message):
+  Include directory '.../components/unity/unity/src' is not a directory.
+```
+
+——**错误指向一个和本移植无关的测试框架**，而真正缺的东西一个都没提到。
+
+> **`EXCLUDE_COMPONENTS` 解决不了这个问题。** 实测：把八个组件全加进
+> `EXCLUDE_COMPONENTS`（`CACHE ... FORCE` 形式）后，configure 仍然死在 unity 上。
+> `project.cmake` 的排除发生在 `idf_component_register()` 之后，而 include 检查在
+> register 里面就做了。**目录必须真的存在。**
+
+`fill-idf-submodules.ps1` 按官方 IDF 记录的提交做浅克隆，九个仓库一共几分钟。
+它幂等——已存在的直接跳过，可以先 `-WhatIf` 看它要做什么。
 
 ### 装工具链
 
