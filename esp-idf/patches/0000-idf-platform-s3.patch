@@ -1,0 +1,1402 @@
+diff --git a/components/bt/controller/esp32/bt.c b/components/bt/controller/esp32/bt.c
+index 1e06d46246..60e0b91058 100644
+--- a/components/bt/controller/esp32/bt.c
++++ b/components/bt/controller/esp32/bt.c
+@@ -868,7 +868,30 @@ static void task_delete_wrapper(void *task_handle)
+ 
+ static bool IRAM_ATTR is_in_isr_wrapper(void)
+ {
++#if CONFIG_IDF_RTOS_RTTHREAD
++    /* "Am I in an ISR?" - not "may I yield?".
++     *
++     * Same conflation as esp_libc's locks.c and esp_wifi's C5 esp_adapter.c,
++     * both fixed earlier in this port. On RT-Thread xPortCanYield() is also
++     * false while the scheduler lock is held, which is what an IDF critical
++     * section leaves behind (vPortEnterCritical -> rt_enter_critical), so every
++     * call made from inside a critical section was reported as an ISR.
++     *
++     * This one is the Bluetooth controller's, and it is the only esp32 target
++     * file that still had the old form: the BT controller for C5 is a prebuilt
++     * library (controller/lib_esp32c5) driven through this OS adapter, so the
++     * predicate decides which of the two code paths the controller takes - the
++     * blocking one or the ISR one - for every queue send, semaphore give and
++     * task-notification it makes.
++     *
++     * BLE works today with the wrong predicate, which is why this was left
++     * alone for several rounds. That makes it latent, not absent: the failure
++     * mode it produces on the Wi-Fi side was a transmit path that silently
++     * stopped. Fixed here for the same reason the other two were. */
++    return xPortInIsrContext() ? true : false;
++#else
+     return !xPortCanYield();
++#endif
+ }
+ 
+ static void IRAM_ATTR cause_sw_intr(void *arg)
+diff --git a/components/esp_libc/src/locks.c b/components/esp_libc/src/locks.c
+index 580f7b0e7e..c9bc4ec5c5 100644
+--- a/components/esp_libc/src/locks.c
++++ b/components/esp_libc/src/locks.c
+@@ -139,7 +139,27 @@ static int LIBC_LOCKS_IRAM_ATTR lock_acquire_generic(_lock_t *lock, uint32_t del
+         return 0; /* locking is a no-op before scheduler is up, so this "succeeds" */
+     }
+     BaseType_t success;
+-    if (!xPortCanYield()) {
++    /* xPortInIsrContext(), NOT !xPortCanYield().
++     *
++     * They look interchangeable and are not. xPortCanYield() returns false in
++     * three different situations: genuine interrupt context, an RT-Thread
++     * scheduler lock (rt_critical_level() != 0), and global IRQ masking. Only the
++     * first is "this is an ISR"; the other two are a TASK that happens to hold a
++     * lock - and taking the ISR branch from a task is both wrong and fatal,
++     * because xSemaphoreTakeFromISR() on a held semaphore returns false and the
++     * code below then calls abort().
++     *
++     * Measured on the C5: esp_phy_enable() takes the RT-Thread scheduler lock and
++     * then calls into libc, which lands here, takes the ISR branch, fails, and
++     * aborts. The stack said lock_acquire_generic/locks.c:150 reached from
++     * phy_rf_init -> phy_set_tsens_power -> temperature_sensor_power_acquire ->
++     * adc_apb_periph_claim -> sar_periph_ctrl_adc_reset -> adc_reset_lock_acquire
++     * -> _lock_acquire. It reproduced on `c5ap` and on `c5join5` alike, because
++     * both re-initialise the PHY.
++     *
++     * xPortInIsrContext() answers the question actually being asked: are we in an
++     * interrupt. */
++    if (xPortInIsrContext()) {
+         /* In ISR Context */
+         if (mutex_type == queueQUEUE_TYPE_RECURSIVE_MUTEX) {
+             abort(); /* recursive mutexes make no sense in ISR context */
+@@ -195,7 +215,10 @@ static void LIBC_LOCKS_IRAM_ATTR lock_release_generic(_lock_t *lock, uint8_t mut
+     SemaphoreHandle_t h = (SemaphoreHandle_t)(*lock);
+     assert(h);
+ 
+-    if (!xPortCanYield()) {
++    /* Same distinction as lock_acquire_generic(): a held scheduler lock is not an
++     * interrupt context, and xSemaphoreGiveFromISR() is both unnecessary and
++     * wrong when called from a task. */
++    if (xPortInIsrContext()) {
+         if (mutex_type == queueQUEUE_TYPE_RECURSIVE_MUTEX) {
+             abort(); /* indicates logic bug, it shouldn't be possible to lock recursively in ISR */
+         }
+@@ -432,3 +455,4 @@ void esp_libc_locks_init(void)
+     esp_libc_newlib_locks_init();
+ #endif
+ }
++
+diff --git a/components/esp_system/CMakeLists.txt b/components/esp_system/CMakeLists.txt
+index 7166786447..462413415e 100644
+--- a/components/esp_system/CMakeLists.txt
++++ b/components/esp_system/CMakeLists.txt
+@@ -89,9 +89,11 @@ else()
+ 
+     set(rtthread_requires "")
+     # Kconfig values are not populated during early dependency discovery, so match
+-    # on the target too, to keep MINIMAL_BUILD working on C3/C6 clean builds.
++    # on the target too, to keep MINIMAL_BUILD working on a clean build.
+     if(CONFIG_IDF_RTOS_RTTHREAD OR
+-       (CMAKE_BUILD_EARLY_EXPANSION AND (target STREQUAL "esp32c3" OR target STREQUAL "esp32c6")))
++       (CMAKE_BUILD_EARLY_EXPANSION AND (target STREQUAL "esp32c3" OR target STREQUAL "esp32c5"
++                                         OR target STREQUAL "esp32c6"
++                                         OR target STREQUAL "esp32s3" OR target STREQUAL "esp32s31")))
+         list(APPEND rtthread_requires rtthread)
+     endif()
+ 
+diff --git a/components/esp_system/esp_ipc.c b/components/esp_system/esp_ipc.c
+index 9141efd361..78aee46948 100644
+--- a/components/esp_system/esp_ipc.c
++++ b/components/esp_system/esp_ipc.c
+@@ -185,7 +185,14 @@ esp_err_t esp_ipc_call_nonblocking(uint32_t cpu_id, esp_ipc_func_t func, void* a
+     }
+ 
+     // Since it can be called from an interrupt or Scheduler is Suspened, it can not wait for a mutex to be released.
++    {
++        extern volatile unsigned int rt_xt_ip3[8];
++        rt_xt_ip3[0] = rt_xt_ip3[0] + 1u;
++        rt_xt_ip3[1] = (unsigned)s_no_block_func[cpu_id];
++        rt_xt_ip3[2] = (unsigned)xTaskGetSchedulerState();
++    }
+     if (esp_cpu_compare_and_set((volatile uint32_t *)&s_no_block_func[cpu_id], 0, (uint32_t)func)) {
++        { extern volatile unsigned int rt_xt_ip3[8]; rt_xt_ip3[3] = rt_xt_ip3[3] + 1u; }
+         s_no_block_func_arg[cpu_id] = arg;
+         s_no_block_func_and_arg_are_ready[cpu_id] = true;
+ 
+diff --git a/components/esp_system/ld/esp32s3/sections.ld.in b/components/esp_system/ld/esp32s3/sections.ld.in
+index ab323eee53..dc6a20f45f 100644
+--- a/components/esp_system/ld/esp32s3/sections.ld.in
++++ b/components/esp_system/ld/esp32s3/sections.ld.in
+@@ -253,6 +253,43 @@ SECTIONS
+   ASSERT(((_bss_end - ORIGIN(dram0_0_seg)) <= LENGTH(dram0_0_seg)),
+          "DRAM segment data does not fit.")
+ 
++#if CONFIG_IDF_RTOS_RTTHREAD
++  /**
++   * RT-Thread kernel heap.
++   *
++   * esp_system/startup.c:do_core_init() calls
++   * rt_system_heap_init(&__heap_start__, &__heap_end__) as the very first thing
++   * it does, before any CORE-stage init function runs, because one of them
++   * allocates (esp_libc_locks_init creates per-file mutexes, which on the
++   * FreeRTOS shim are rt_malloc'ed objects). Without these two symbols the link
++   * fails; without the ordering the first rt_malloc dereferences a NULL
++   * system_heap.
++   *
++   * Placed here, right after .dram0.bss, so the region is inside dram0_0_seg and
++   * below _heap_low_start: IDF's own allocator starts after it, and the two
++   * therefore never overlap. This is a reserved region, not a pool - RT-Thread
++   * hands it to rt_smem, so it must not also be registered with heap_caps.
++   *
++   * CONFIG_IDF_RTTHREAD_HEAP_SIZE defaults to 40 KB.
++   */
++  .heap (NOLOAD) :
++  {
++    . = ALIGN(16);
++    __HEAPSIZE__ = CONFIG_IDF_RTTHREAD_HEAP_SIZE;
++    __heap_start__ = .;
++    . += __HEAPSIZE__;
++    __heap_end__ = .;
++  } > dram0_0_seg
++
++  /* No .stack section here, unlike the S31 port: that one needs
++   * CONFIG_IDF_RTTHREAD_INTERRUPT_STACK_SIZE worth of linker-allocated
++   * interrupt stack because its trap entry is assembly that loads a symbol.
++   * On Xtensa the C-level ISR stack is a static array in
++   * port/esp32s3/cpuport.c, so the linker has nothing to place - and that is
++   * deliberate, because a windowed-ABI caller must reach it through a
++   * 16-byte-aligned address known at assembly time. */
++#endif /* CONFIG_IDF_RTOS_RTTHREAD */
++
+   .flash.text :
+   {
+     _stext = .;
+@@ -385,6 +422,42 @@ SECTIONS
+     KEEP (*(SORT_BY_INIT_PRIORITY(.esp_sys_init_fn.*)))
+     _esp_sys_init_fn_end = ABSOLUTE(.);
+ 
++#if CONFIG_IDF_RTOS_RTTHREAD
++    /**
++     * RT-Thread's three section-based tables.
++     *
++     *   FSymTab      msh commands (MSH_CMD_EXPORT and friends)
++     *   VSymTab      the variable table `msh` can print
++     *   .rti_fn*     INIT_BOARD_EXPORT / INIT_DEVICE_EXPORT / ... entries, plus
++     *                the six boundary markers that components.c defines
++     *
++     * They live inside .flash.rodata rather than in a section of their own,
++     * for the reason recorded in the S31 linker script: a separate loadable
++     * segment would be a third one, and bootloader_utility.c asserts
++     * rom_index < 2 on chips whose D/I vaddrs are shared.
++     *
++     * Without these rules the link fails outright - measured on this port:
++     * "unplaced orphan section `.rti_fn.6.end' from librtthread.a(components.c.obj)"
++     * for each of the six markers, because the S3 script has no equivalent of
++     * the shared ld.flash.sections that emits them for other targets. KEEP() is
++     * what pins them; --gc-sections can still drop individual entries, which is
++     * why CMakeLists.txt also carries one -u per exported init function.
++     */
++    . = ALIGN(8);
++    __fsymtab_start = .;
++    KEEP(*(FSymTab))
++    __fsymtab_end = .;
++    . = ALIGN(8);
++    __vsymtab_start = .;
++    KEEP(*(VSymTab))
++    __vsymtab_end = .;
++    . = ALIGN(4);
++    __rt_init_start = .;
++    KEEP(*(SORT(.rti_fn*)))
++    __rt_init_end = .;
++    . = ALIGN(4);
++#endif /* CONFIG_IDF_RTOS_RTTHREAD */
++
+     _rodata_end = ABSOLUTE(.);
+ 
+     /* Literals are also RO data. */
+diff --git a/components/esp_system/ld/ld.flash.sections b/components/esp_system/ld/ld.flash.sections
+index 22cc9e2ae4..61daaab5c8 100644
+--- a/components/esp_system/ld/ld.flash.sections
++++ b/components/esp_system/ld/ld.flash.sections
+@@ -108,6 +108,36 @@
+     *(.gcc_except_table .gcc_except_table.*)
+     *(.gnu.linkonce.e.*)
+ 
++    /* RT-Thread's shell command table and auto-init callbacks.
++     *
++     * These have to live inside a loadable PROGBITS section, and that is not a
++     * stylistic preference. SOC_MMU_DI_VADDR_SHARED chips (esp32c6, esp32s31)
++     * map exactly two segments from flash, and the bootloader asserts it:
++     *
++     *     assert(rom_index < 2);          bootloader_utility.c:833
++     *
++     * A separate .flash.rt_thread section placed after the NOLOAD sections
++     * becomes a third one - NOBITS occupies no file space, so the linker has to
++     * open a new load segment to continue with PROGBITS. The image then fails to
++     * boot with "Assert failed in unpack_load_app (rom_index < 2)" after the
++     * bootloader has already printed "Loaded app from partition".
++     *
++     * Putting them here keeps the count at two: one text segment, one rodata.
++     * The linker can still garbage-collect individual entries, because KEEP()
++     * is what pins the start and end symbols, not the placement. */
++    . = ALIGN(8);
++    __fsymtab_start = .;
++    KEEP(*(FSymTab))
++    __fsymtab_end = .;
++    . = ALIGN(8);
++    __vsymtab_start = .;
++    KEEP(*(VSymTab))
++    __vsymtab_end = .;
++    . = ALIGN(4);
++    __rt_init_start = .;
++    KEEP(*(SORT(.rti_fn*)))
++    __rt_init_end = .;
++
+     . = ALIGN(ALIGNOF(.flash.init_array));
+   } > flash_rodata_seg
+   ASSERT_SECTIONS_GAP(.flash.rodata, .flash.init_array)
+diff --git a/components/esp_system/port/arch/xtensa/esp_ipc_isr_handler.S b/components/esp_system/port/arch/xtensa/esp_ipc_isr_handler.S
+index 2779a813bc..64342cab1c 100644
+--- a/components/esp_system/port/arch/xtensa/esp_ipc_isr_handler.S
++++ b/components/esp_system/port/arch/xtensa/esp_ipc_isr_handler.S
+@@ -102,9 +102,28 @@ esp_ipc_isr_handler:
+     /* Call the esp_ipc_function(void* arg) */
+     movi    a0, esp_ipc_func
+     l32i    a0, a0, 0
++    /*
++     * Skip the call when no function is armed.
++     *
++     * This handler is level-5 and is raised by writing
++     * SYSTEM_CPU_INTR_FROM_CPU_n_REG. It is not exclusively owned by esp_ipc:
++     * this port's own IPI (board/smp.c) and the scheduler's cross-core wake-up
++     * both write those same registers, so the handler can be entered with
++     * esp_ipc_func still NULL. `callx0 a0` then jumps to address 0.
++     *
++     * Measured on the dual-core bring-up: Core 1 panic'ed
++     * (InstrFetchProhibited), PC : 0x0, A0 : 0x40375c24
++     * (= the instruction after this call), and the resulting panic handler then
++     * faulted again printing the dump.
++     *
++     * Skipping is safe: with nothing armed there is nothing to run, and the end
++     * flag below still marks the handshake complete.
++     */
++    beqz    a0, 3f
+     movi    a2, esp_ipc_func_arg
+     l32i    a2, a2, 0
+     callx0  a0
++3:
+ 
+     /* Done. Restore registers and return. */
+     movi    a0, _lx_intr_stack
+diff --git a/components/esp_system/startup.c b/components/esp_system/startup.c
+index a736f07554..9da56c76ea 100644
+--- a/components/esp_system/startup.c
++++ b/components/esp_system/startup.c
+@@ -192,15 +192,33 @@ static void ESP_SYSTEM_IRAM_ATTR start_cpu_other_cores_default(void)
+ 
+ static void do_core_init(void)
+ {
+-    do_system_init_fn(ESP_SYSTEM_INIT_STAGE_CORE);
+-
+-    // Initialize the RT-Thread heap once after IDF's core heap initialization,
+-    // before constructors, secondary initialization and scheduler startup.
+ #if CONFIG_IDF_RTOS_RTTHREAD && defined(RT_USING_HEAP)
++    /* The RT-Thread heap has to exist before any CORE-stage init function runs,
++     * not after. One of them allocates.
++     *
++     * esp_libc_init -> esp_libc_locks_init creates per-file mutexes, and on the
++     * FreeRTOS shim a mutex is an rt_malloc'ed object, so the very first
++     * rt_malloc of the boot happens inside do_system_init_fn(). With the heap
++     * still uninitialised, rt_smem_alloc() dereferences system_heap == NULL at
++     * src/mem.c:287 and the CPU takes a load access fault at address 0xc
++     * (offsetof(struct rt_object, type)).
++     *
++     * The observed panic, for the record: MEPC 0x400112ce (rt_object_get_type),
++     * A0 = 0, MTVAL = 0xc, called from xQueueCreateMutexStatic via
++     * esp_libc_locks_init. Moving this up is the whole fix - nothing else about
++     * the heap changed.
++     *
++     * Ordering with respect to IDF's own heap: heap_caps_init has already run
++     * as an earlier CORE-stage function, and __heap_start__/__heap_end__ are
++     * linker symbols describing a region IDF deliberately leaves out of its own
++     * allocator, so initialising RT-Thread's heap here cannot take memory from
++     * it. */
+     extern int __heap_start__;
+     extern int __heap_end__;
+     rt_system_heap_init((void *)&__heap_start__, (void *)&__heap_end__);
+ #endif // CONFIG_IDF_RTOS_RTTHREAD && defined(RT_USING_HEAP)
++
++    do_system_init_fn(ESP_SYSTEM_INIT_STAGE_CORE);
+ }
+ 
+ static void do_secondary_init(void)
+@@ -268,21 +286,43 @@ static void start_cpu0_default(void)
+ #else
+     // Follow src/components.c using public interfaces. IDF has already brought
+     // up the other cores, so do not invoke rt_hw_secondary_cpu_up() again.
+-    // This path needs board/tick setup and application thread creation from
+-    // the port; rt_application_init() is not declared in the public headers.
++    extern void rt_application_init(void);
++    extern void rt_hw_board_init(void);
++
+     rt_hw_local_irq_disable();
+ #ifdef RT_USING_SMP
+     rt_hw_spin_lock_init(&_cpus_lock);
+     rt_hw_spin_lock(&_cpus_lock);
+ #endif
++
++    /* Board init, which src/components.c does first as well.
++     *
++     * This is NOT optional and it was missing: without it vPortSetupTimer()
++     * never runs (no tick at all), _xt_coproc_init() never runs (no FPU
++     * ownership), and not one INIT_BOARD_EXPORT driver is registered. Measured
++     * on the multi-core build before this line existed: the shell came up and
++     * every command that touched a device returned -1, with `list device`
++     * empty, because nothing had been probed. */
++    rt_hw_board_init();
++
++    rt_show_version();
++
+     rt_system_timer_init();
+     rt_system_scheduler_init();
+ #ifdef RT_USING_SIGNALS
+     rt_system_signal_init();
+ #endif
++
++    /* And the application thread, which src/components.c creates between the
++     * scheduler init and the timer thread. Without it there is no `main` and no
++     * shell: rt_system_scheduler_start() would switch straight to the idle
++     * thread and sit there. */
++    rt_application_init();
++
+     rt_system_timer_thread_init();
+     rt_thread_idle_init();
+     rt_thread_defunct_init();
++
+ #if !CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE
+     // Release secondary cores only once scheduler data and idle threads exist.
+     // The RT-Thread secondary entry must take _cpus_lock before scheduling.
+diff --git a/components/esp_wifi/src/wifi_netif.c b/components/esp_wifi/src/wifi_netif.c
+index 418b249479..fe38e42e52 100644
+--- a/components/esp_wifi/src/wifi_netif.c
++++ b/components/esp_wifi/src/wifi_netif.c
+@@ -61,19 +61,58 @@ static void wifi_free(void *h, void* buffer)
+     }
+ }
+ 
++/* TX outcome counters, added to diagnose the RT-Thread transmit stall.
++ *
++ * lwIP's pcb dump on this port shows a stuck connection with TF_NAGLEMEMERR
++ * (0x80) set, snd_buf=0, four MSS-sized segments queued and nothing in flight.
++ * TF_NAGLEMEMERR persists only when tcp_output() did not reach its clearing
++ * path, which happens when tcp_output_segment() fails - i.e. when this function
++ * returned an error. So the question "does the Wi-Fi driver reject these frames?"
++ * can be answered here, and these two counters answer it without a debugger.
++ *
++ * Deliberately plain increments: this runs in the tcpip thread, and the counters
++ * are only read by a console command. */
++volatile uint32_t g_c5_wifi_tx_ok;
++volatile uint32_t g_c5_wifi_tx_err_nomem;
++volatile uint32_t g_c5_wifi_tx_err_other;
++
++static void wifi_transmit_counted(void *h, void *buffer, size_t len, esp_err_t err)
++{
++    (void)h;
++    (void)buffer;
++    (void)len;
++
++    if (err == ESP_OK) {
++        g_c5_wifi_tx_ok++;
++    } else if (err == ESP_ERR_NO_MEM) {
++        g_c5_wifi_tx_err_nomem++;
++    } else {
++        g_c5_wifi_tx_err_other++;
++    }
++}
++
+ static esp_err_t wifi_transmit(void *h, void *buffer, size_t len)
+ {
+     wifi_netif_driver_t driver = h;
+-    return esp_wifi_internal_tx(driver->wifi_if, buffer, len);
++    esp_err_t err = esp_wifi_internal_tx(driver->wifi_if, buffer, len);
++
++    wifi_transmit_counted(h, buffer, len, err);
++    return err;
+ }
+ 
+ static esp_err_t wifi_transmit_wrap(void *h, void *buffer, size_t len, void *netstack_buf)
+ {
+     wifi_netif_driver_t driver = h;
+ #if CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP && !CONFIG_SPIRAM_IGNORE_NOTFOUND
+-    return esp_wifi_internal_tx_by_ref(driver->wifi_if, buffer, len, netstack_buf);
++    esp_err_t err = esp_wifi_internal_tx_by_ref(driver->wifi_if, buffer, len, netstack_buf);
++
++    wifi_transmit_counted(h, buffer, len, err);
++    return err;
+ #else
+-    return esp_wifi_internal_tx(driver->wifi_if, buffer, len);
++    esp_err_t err = esp_wifi_internal_tx(driver->wifi_if, buffer, len);
++
++    wifi_transmit_counted(h, buffer, len, err);
++    return err;
+ #endif
+ }
+ 
+diff --git a/components/freertos/CMakeLists.txt b/components/freertos/CMakeLists.txt
+index 23187c5c3b..a218776dd1 100644
+--- a/components/freertos/CMakeLists.txt
++++ b/components/freertos/CMakeLists.txt
+@@ -67,35 +67,79 @@ if((arch STREQUAL "xtensa") OR (arch STREQUAL "riscv"))
+         "port_systick.c")
+ endif()
+ 
+-# Add FreeRTOS Kernel source files
+-list(APPEND srcs
+-    "${kernel_impl}/list.c"
+-    "${kernel_impl}/queue.c"
+-    "${kernel_impl}/tasks.c"
+-    "${kernel_impl}/timers.c"
+-    "${kernel_impl}/event_groups.c"
+-    "${kernel_impl}/stream_buffer.c")
+-
+-# Add port source files
++# Add FreeRTOS Kernel source files.
++#
++# When the RT-Thread shim is enabled the scheduler is not built at all: its API
++# surface comes from components/rtthread/port/freertos/freertos_api.c instead.
++# list.c stays because the port layer and the esp_additions helpers use its
++# linked-list primitives directly. port.c / port_systick.c / port_common.c also
++# stay: they provide the RT-Thread tick (vPortSetupTimer) and the critical
++# sections, and they link cleanly without the scheduler because --gc-sections
++# drops the entry points nothing calls.
+ list(APPEND srcs
+-    "${kernel_impl}/portable/${arch}/port.c")
++    "${kernel_impl}/list.c")
+ 
+-if(arch STREQUAL "linux")
++if(NOT CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM)
+     list(APPEND srcs
+-        "${kernel_impl}/portable/${arch}/utils/wait_for_event.c")
+-    if(kernel_impl STREQUAL "FreeRTOS-Kernel")
+-        list(APPEND srcs
+-            "${kernel_impl}/portable/${arch}/port_idf.c")
+-    endif()
++        "${kernel_impl}/queue.c"
++        "${kernel_impl}/tasks.c"
++        "${kernel_impl}/timers.c"
++        "${kernel_impl}/event_groups.c"
++        "${kernel_impl}/stream_buffer.c")
+ else()
+-    list(APPEND srcs
+-        "${kernel_impl}/portable/${arch}/portasm.S")
++    # stream_buffer.c survives the switch even though queue.c/tasks.c do not.
++    # It is self-contained: no pxCurrentTCBs, no scheduler internals, only the
++    # task notification API (which the shim implements) plus port macros. Keeping
++    # it means xStreamBuffer* and idf_additions' xStreamBufferCreateWithCaps stay
++    # callable instead of becoming undefined symbols the first time something
++    # reaches for them.
++    list(APPEND srcs "${kernel_impl}/stream_buffer.c")
+ endif()
+ 
+-if(arch STREQUAL "xtensa")
++# Add port source files.
++#
++# On Xtensa under RT-Thread the whole FreeRTOS port is removed, not just the
++# scheduler. Unlike RISC-V - where port.c is kept because vPortSetupTimer() and
++# the critical-section helpers live there - the Xtensa port's portasm.S and
++# port.c define symbols that components/xtensa/xtensa_vectors.S already
++# defines: _xt_user_exit, the coprocessor exception path, the _frxt_* dispatch.
++# Linking both is a duplicate-symbol error, and keeping only part of port.c is
++# not possible either, because it references pxCurrentTCBs and port_IntStack
++# throughout.
++#
++# Everything the RT-Thread port still needs from here is architecture neutral:
++#   port_systick.c   vPortSetupTimer() -> SYSTIMER alarm -> rt_tick_increase()
++#   port_common.c    static-allocation callbacks
++#   list.c           used by esp_additions and by the shim
++# The replacement for the context switch itself lives in
++# components/rtthread/port/esp32s3/{context_gcc.S,cpuport.c,interrupt.c}.
++if(CONFIG_IDF_RTOS_RTTHREAD AND (arch STREQUAL "xtensa"))
++    # Deliberately nothing from portable/xtensa/:
++    #   port.c / portasm.S      duplicate the vector table and the switch
++    #   xtensa_init.c           _xt_tick_divisor_init/_xt_tick_divisor belong
++    #                           to the CCOUNT tick, which this port does not use
++    #   xtensa_overlay_os_hook.c  overlay manager, unused
++else()
+     list(APPEND srcs
+-        "${kernel_impl}/portable/${arch}/xtensa_init.c"
+-        "${kernel_impl}/portable/${arch}/xtensa_overlay_os_hook.c")
++        "${kernel_impl}/portable/${arch}/port.c")
++
++    if(arch STREQUAL "linux")
++        list(APPEND srcs
++            "${kernel_impl}/portable/${arch}/utils/wait_for_event.c")
++        if(kernel_impl STREQUAL "FreeRTOS-Kernel")
++            list(APPEND srcs
++                "${kernel_impl}/portable/${arch}/port_idf.c")
++        endif()
++    else()
++        list(APPEND srcs
++            "${kernel_impl}/portable/${arch}/portasm.S")
++    endif()
++
++    if(arch STREQUAL "xtensa")
++        list(APPEND srcs
++            "${kernel_impl}/portable/${arch}/xtensa_init.c"
++            "${kernel_impl}/portable/${arch}/xtensa_overlay_os_hook.c")
++    endif()
+ endif()
+ 
+ # Add ESP-additions source files
+@@ -159,6 +203,23 @@ endif()
+ list(APPEND private_include_dirs
+     "esp_additions")                # For `include "freertos_tasks_c_additions.h"`
+ 
++# Under RT-Thread, headers that reach the kernel include rtthread.h, and
++# rtthread.h -> rttypes.h -> `#include <cpuport.h>` once RT_USING_SMP is on.
++# That header is the CPU port's spinlock type, and it lives in the RT-Thread
++# tree.
++#
++# Without this the build fails the moment SMP is enabled:
++#   rttypes.h:161:10: fatal error: cpuport.h: No such file or directory
++#   <- port_systick.c -> portmacro.h -> FreeRTOS.h -> rtthread.h
++#
++# UP builds never noticed because RT_USING_SMP was off and that include was
++# compiled out, so this is a new need rather than a new break.
++if(CONFIG_IDF_RTOS_RTTHREAD AND (arch STREQUAL "xtensa"))
++    get_filename_component(_rtt_root
++        "${CMAKE_CURRENT_LIST_DIR}/../../../rt-thread" ABSOLUTE)
++    list(APPEND private_include_dirs "${_rtt_root}/libcpu/xtensa")
++endif()
++
+ # ------------------------------------------------------- Misc ---------------------------------------------------------
+ 
+ # Add linker fragments
+diff --git a/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c b/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
+index caa10d28d8..9a731f7898 100644
+--- a/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
++++ b/components/freertos/FreeRTOS-Kernel/portable/riscv/port.c
+@@ -533,17 +533,43 @@ void vPortClearInterruptMaskFromISR(UBaseType_t prev_int_level)
+ // ------------------ Critical Sections --------------------
+ 
+ #if CONFIG_IDF_RTOS_RTTHREAD
+-/* Bring-up contract: restore cache before yielding or leaving the outermost
+- * IDF critical section. rt_exit_critical() can dispatch a pending schedule.
+- * C6's predicate tracks HAL cache operations; direct ROM cache calls bypass it.
+- * Keep both the check and its failure message accessible with cache disabled.
++/*
++ * RT-Thread's scheduler, its ready queues and every ISR in port/esp32s31 live in
++ * flash, so a context switch with the cache off is an immediate crash. This
++ * assertion is the port's contract, and it has caught exactly that.
++ *
++ * But "cache off" alone is not the violation - entering the scheduler is. Two
++ * IDF code paths legitimately hold a critical section with the cache disabled
++ * and never switch:
++ *
++ *   spi_flash_disable_cache()       around flash writes/erases
++ *   mspi_timing_enter_low_speed_*() around MSPI timing switches
++ *                                   (mspi_timing_tuning.c:654 - disable_cache()
++ *                                    then mspi_timing_enter_low_speed_mode())
++ *
++ * The second one is what made PSRAM above 40 MHz unbootable: the tuning path
++ * enters an IDF critical section (periph_rcc_enter) inside that window, and the
++ * outermost exit called this function, which aborted the boot. Aborting there
++ * protects nothing: no switch is pending, because nothing in that window can
++ * create one.
++ *
++ * So the check is narrowed to the condition that actually matters - a switch
++ * really pending, or the before-yield call sites - while a plain critical exit
++ * with the cache off is allowed to proceed. The dangerous case (an interrupt
++ * arriving with the cache off and rt_schedule() being reached from it) is still
++ * covered by the vPortYieldFromISR() call site, which now checks it directly.
+  */
+-static void IRAM_ATTR prvAssertCacheEnabled(void)
++static void IRAM_ATTR prvAssertCacheEnabled(const char *where)
+ {
+     if (!cache_hal_is_cache_enabled(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL)) {
+-        esp_system_abort(DRAM_STR("RT-Thread scheduler entry while flash cache is disabled"));
++        esp_system_abort(where);
+     }
+ }
++
++/* Call sites that come from a peripheral ISR or an explicit yield: a switch may
++ * be dispatched right here, so the cache must be on unconditionally. */
++#define PRV_REQUIRE_CACHE_FOR_SWITCH() \
++    prvAssertCacheEnabled(DRAM_STR("RT-Thread scheduler entry while flash cache is disabled"))
+ #endif
+ 
+ #if (configNUM_CORES > 1)
+@@ -657,9 +683,13 @@ void vPortExitCritical(void)
+ 
+         if (port_uxCriticalNesting[0] == 0) {
+ #if CONFIG_IDF_RTOS_RTTHREAD
+-            /* The kernel's pending-switch flag is private. Conservatively
+-             * require cache on before any outermost exit can dispatch it. */
+-            prvAssertCacheEnabled();
++            /* rt_exit_critical() can dispatch a schedule, but only when one is
++             * pending. Asking the kernel instead of aborting unconditionally is
++             * what lets the MSPI/PSRAM paths run: they hold this critical
++             * section with the cache off and have nothing pending. */
++            if (rt_critical_level() == 0 && rt_thread_self() != RT_NULL) {
++                PRV_REQUIRE_CACHE_FOR_SWITCH();
++            }
+ #endif
+             portCLEAR_INTERRUPT_MASK_FROM_ISR(port_uxOldInterruptState[0]);
+ #if CONFIG_IDF_RTOS_RTTHREAD
+@@ -678,7 +708,7 @@ void vPortYield(void)
+     if (rt_interrupt_get_nest() != 0) {
+         vPortYieldFromISR();
+     } else if (rt_thread_self() != RT_NULL) {
+-        prvAssertCacheEnabled();
++        PRV_REQUIRE_CACHE_FOR_SWITCH();
+         /* taskYIELD relinquishes the current time slice to equal-priority peers. */
+         rt_thread_yield();
+     }
+@@ -712,8 +742,29 @@ void vPortYieldFromISR( void )
+      * yield, an ISR reschedule must not rotate the interrupted thread's time
+      * slice. rt_schedule() records the switch for the outermost trap exit. */
+     if (rt_thread_self() != RT_NULL) {
+-        prvAssertCacheEnabled();
+-        rt_schedule();
++        /* DEFER, DO NOT ABORT, WHEN THE FLASH CACHE IS OFF.
++         *
++         * This yield is an OPTIMISATION, not a correctness requirement: by the
++         * time any ISR reaches here, the thread it wants to wake is already in
++         * the ready queue, and RT-Thread's 1 kHz tick calls rt_schedule() on its
++         * own. Skipping this one call therefore delays the switch by at most one
++         * tick (1 ms) and loses nothing.
++         *
++         * Aborting, by contrast, takes the whole chip down. It used to:
++         *
++         *   RT-Thread scheduler entry while flash cache is disabled
++         *
++         * during a Wi-Fi re-join, because the ESP32-C5 Wi-Fi driver registers its
++         * handler with the ROM's `intr_handler_set()` (esp32c5.rom.ld) rather
++         * than `esp_intr_alloc()` - so IDF has no way to mask it around a flash
++         * operation, and it fires while NVS is being written with the cache off.
++         *
++         * Eight attempts to make the callee IRAM-safe all failed; the callee is
++         * RT-Thread's scheduler, which does not fit in IRAM. Not calling it is
++         * the answer, and a 1 ms deferral is a price worth stating plainly. */
++        if (cache_hal_is_cache_enabled(CACHE_LL_LEVEL_EXT_MEM, CACHE_TYPE_ALL)) {
++            rt_schedule();
++        }
+     }
+ #else
+     BaseType_t coreID = xPortGetCoreID();
+diff --git a/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/xtensa_rtos.h b/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/xtensa_rtos.h
+index 42399b5c68..08cb8dc826 100644
+--- a/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/xtensa_rtos.h
++++ b/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/xtensa_rtos.h
+@@ -101,7 +101,11 @@ However these can still be overridden from the command line.
+ /*
+ Name of RTOS (for messages).
+ */
++#if CONFIG_IDF_RTOS_RTTHREAD
++#define XT_RTOS_NAME    RT-Thread
++#else
+ #define XT_RTOS_NAME    FreeRTOS
++#endif
+ 
+ /*
+ Check some Xtensa configuration requirements and report error if not met.
+@@ -109,7 +113,7 @@ Error messages can be customize to the RTOS port.
+ */
+ 
+ #if !XCHAL_HAVE_XEA2
+-#error "FreeRTOS/Xtensa requires XEA2 (exception architecture 2)."
++#error "This Xtensa port requires XEA2 (exception architecture 2)."
+ #endif
+ 
+ 
+@@ -123,6 +127,36 @@ Some of these functions may call back to generic functions in xtensa_context.h .
+ 
+ *******************************************************************************/
+ 
++#if CONFIG_IDF_RTOS_RTTHREAD
++
++/*
++ * RT-Thread definitions of the same five callouts.
++ *
++ * xtensa_vectors.S implements the entire vector table and every exception path
++ * without naming a single RTOS symbol: it reaches the OS only through these
++ * macros plus XT_RTOS_TIMER_INT and XT_RTOS_CP_STATE/XT_RTOS_CP_EXC_HOOK. That is
++ * what makes ESP-IDF's Xtensa porting layer reusable by a non-FreeRTOS kernel,
++ * and it is the reason components/rtthread/port/esp32s3 does not carry its own
++ * copy of the vectors.
++ *
++ * The implementations live in components/rtthread/port/esp32s3/context_gcc.S,
++ * which is compiled whenever CONFIG_IDF_RTOS_RTTHREAD is set on an Xtensa target.
++ *
++ * XT_RTOS_TIMER_INT is deliberately left undefined. IDF's tick comes from the
++ * SYSTIMER alarm routed through esp_intr_alloc() (port_systick.c:
++ * SysTickIsrHandler -> rt_tick_increase), not from the Xtensa CCOMPARE timer that
++ * XT_RTOS_TIMER_INT exists for. Defining it would install a second, competing tick
++ * source in every level-1 entry.
++ */
++#define XT_RTOS_INT_ENTER       _rtt_int_enter
++#define XT_RTOS_INT_EXIT        _rtt_int_exit
++#define XT_RTOS_CP_STATE        _rtt_coproc_state
++#if XCHAL_CP_NUM > 0
++#define XT_RTOS_CP_EXC_HOOK     _rtt_coproc_exc_hook
++#endif
++
++#else /* FreeRTOS definitions, unchanged */
++
+ /*
+ Inform RTOS of entry into an interrupt handler that will affect it.
+ Allows RTOS to manage switch to any system stack and count nesting level.
+@@ -156,7 +190,6 @@ RTOS may optionally define XT_TICK_PER_SEC in its own way (eg. macro).
+ #ifdef CONFIG_FREERTOS_SYSTICK_USES_CCOUNT
+ #define XT_RTOS_TIMER_INT   _frxt_timer_int
+ #endif
+-#define XT_TICK_PER_SEC     configTICK_RATE_HZ
+ 
+ /*
+ Return in a15 the base address of the co-processor state save area for the
+@@ -180,6 +213,16 @@ The implementation may use only a2-4, a15 (all other regs must be preserved).
+ #define XT_RTOS_CP_EXC_HOOK   _frxt_coproc_exc_hook
+ #endif
+ 
++#endif /* CONFIG_IDF_RTOS_RTTHREAD */
++
++/*
++Tick rate, used by the Xtensa timer callout. configTICK_RATE_HZ is still defined
++under RT-Thread because freertos/FreeRTOSConfig.h is included above unconditionally
++and CONFIG_FREERTOS_HZ is what sets it; RT-Thread's RT_TICK_PER_SECOND is asserted
++equal to it in port_systick.c.
++*/
++#define XT_TICK_PER_SEC     configTICK_RATE_HZ
++
+ /*******************************************************************************
+ 
+ HOOKS TO DYNAMICALLY INSTALL INTERRUPT AND EXCEPTION HANDLERS PER LEVEL.
+diff --git a/components/freertos/Kconfig b/components/freertos/Kconfig
+index 5675269368..4962147ceb 100644
+--- a/components/freertos/Kconfig
++++ b/components/freertos/Kconfig
+@@ -603,17 +603,27 @@ menu "FreeRTOS"
+         default y
+ 
+     config IDF_RTOS_RTTHREAD
+-        bool "Replace FreeRTOS with RT-Thread (experimental, ESP32-C3/C6)"
+-        depends on IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6
++        bool "Replace FreeRTOS with RT-Thread (experimental, ESP32-C3/C5/C6/S3/S31)"
++        depends on IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32S31
+         default n
+         help
+             Replaces the FreeRTOS interrupt entry and startup hooks with RT-Thread.
+             Requires RTTHREAD_ROOT (upstream RT-Thread, unmodified), see
+             components/rtthread/README.md.
+ 
++            On Xtensa (ESP32-S3) the whole FreeRTOS Xtensa port is removed from
++            the build instead of being kept for its critical sections: its
++            portasm.S and port.c define _xt_user_exit, _xt_coproc_* and the
++            context-switch helpers that components/xtensa/xtensa_vectors.S
++            already provides, and the two cannot coexist. The RT-Thread port
++            supplies its own, see components/rtthread/port/esp32s3/.
++
+     config IDF_RTTHREAD_INTERRUPT_STACK_SIZE
+         int "RT-Thread interrupt stack size (bytes)"
+-        depends on IDF_RTOS_RTTHREAD
++        # RISC-V only: the trap entry in vectors_rtthread.S is assembly that
++        # loads __stack_end__, so the stack has to come from the linker. On
++        # Xtensa the C-level ISR stack is a static array in cpuport.c.
++        depends on IDF_RTOS_RTTHREAD && IDF_TARGET_ARCH_RISCV
+         range 4096 131072
+         default 40960
+         help
+@@ -631,6 +641,26 @@ menu "FreeRTOS"
+             (__heap_start__/__heap_end__). Coexists with the IDF heap. Default
+             keeps the previous hardcoded 40 KB.
+ 
++    config IDF_RTOS_RTTHREAD_FREERTOS_SHIM
++        bool "Provide FreeRTOS APIs from RT-Thread (drop the FreeRTOS scheduler)"
++        depends on IDF_RTOS_RTTHREAD
++        default n
++        help
++            Stops compiling the FreeRTOS scheduler (queue.c, tasks.c, timers.c,
++            event_groups.c, stream_buffer.c) and provides the same API surface
++            from components/rtthread/port/freertos/ instead. The port layer
++            (port.c, port_systick.c, port_common.c, portasm.S, list.c) is kept,
++            because the RT-Thread tick and the critical sections come from it.
++
++            Leave this off until the target has been validated: with it on,
++            spi_flash, esp_libc's newlib locks and esp_coex all run on the shim,
++            and a semantic mistake there breaks the system during boot rather
++            than in the component that asked for it.
++
++            This is step W3 of rtthread-esp32-s31-wifi-feasibility.md and it is
++            what makes esp_driver_uart and eventually esp_wifi usable on
++            RT-Thread. Verify with `s31test fbshim` before enabling.
++
+     config FREERTOS_NO_AFFINITY
+         # This invisible config value sets the value of tskNO_AFFINITY in task.h.
+         # Intended to be used as a constant from other Kconfig files.
+diff --git a/components/freertos/port_systick.c b/components/freertos/port_systick.c
+index 2ce6a92b50..31e3eb27c1 100644
+--- a/components/freertos/port_systick.c
++++ b/components/freertos/port_systick.c
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  * SPDX-FileCopyrightText: 2017-2024 Espressif Systems (Shanghai) CO LTD
+  *
+  * SPDX-License-Identifier: Apache-2.0
+@@ -218,9 +218,119 @@ BaseType_t xPortSysTickHandler(void)
+      * Protect the kernel tick from nesting; requested thread switches run at
+      * the outermost trap exit.
+      */
+-    rt_base_t level = rt_hw_interrupt_disable();
++    /*
++     * LOCAL mask, not rt_hw_interrupt_disable().
++     *
++     * Under RT_USING_SMP rthw.h:146 defines rt_hw_interrupt_disable as
++     * rt_cpus_lock - which takes the GLOBAL _cpus_lock spinlock and bumps
++     * current_thread->cpus_lock_nest. Doing that from an interrupt handler is
++     * wrong twice over: the handler runs on the ISR stack with the preempted
++     * thread's window state spilled elsewhere, and the spinlock's S32C1I plus the
++     * extra windowed-ABI calls are exactly what the crash log shows
++     * (rt_cpus_lock -> rt_soft_atomic_load -> rt_hw_interrupt_disable with
++     * sp = 0x3fc80020, below DRAM).
++     *
++     * rt_hw_local_irq_disable only raises PS.INTLEVEL on this core - which is all
++     * a handler needs, since it is already running with interrupts masked at its
++     * own level.
++     */
++
++
++    /*
++     * Acknowledge and park while the other core has its instruction cache off.
++     *
++     * Everything below this point up to the acknowledgement is IRAM-resident, so
++     * it is safe to run with the cache disabled. The park loop is what CPU0's
++     * spi_flash_other_core_stop() waits for; without it that wait times out and
++     * CPU0 proceeds to touch flash while this core is still fetching from it.
++     *
++     * Guarded on the flag first so the common tick costs one load.
++     */
++#if defined(__XTENSA__) && (configNUM_CORES > 1)
++    /* Dual-core Xtensa only: a cache-off handshake between CPU0 and CPU1, plus a
++     * debugging probe for it. `xt_rt_flash_op`, `xt_rt_flash_ack` and `rt_xt_pk`
++     * are all defined in the Xtensa port; a single-core RISC-V build (the C5) has
++     * none of them and the link fails with undefined references to all three.
++     *
++     * Guarded, not deleted - this is active work on the SMP Xtensa target, and it
++     * is correct there.
++     *
++     * This is the THIRD distinct block of Xtensa-only instrumentation to appear in
++     * this one file during this port (after rt_xt_br and rt_xt_sst). Anything added
++     * to xPortSysTickHandler needs to answer "does this exist on RISC-V?" before it
++     * compiles here. */
++    {
++        extern volatile rt_uint32_t xt_rt_flash_op;
++        extern volatile rt_uint32_t xt_rt_flash_ack;
++
++        if (xt_rt_flash_op != 0)
++        {
++            xt_rt_flash_ack = 1;
++
++            while (xt_rt_flash_op != 0)
++            {
++                /* CPU0 clears the flag once its cache is back on. */
++            }
++        }
++    }
++#endif /* __XTENSA__ && configNUM_CORES > 1 */
++
++
++
++    /* Xtensa dual-core debugging probes (rt_xt_ip3 / rt_xt_nf / rt_xt_ii are all
++     * defined in the Xtensa port and the S3 BSP). Fourth distinct block of this
++     * kind in this one file; a RISC-V build has none of the three symbols. */
++#if defined(__XTENSA__) && (configNUM_CORES > 1)
++
++#endif /* __XTENSA__ && configNUM_CORES > 1 */
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++    rt_base_t level = rt_hw_local_irq_disable();
+     rt_tick_increase();
+-    rt_hw_interrupt_enable(level);
++    rt_hw_local_irq_enable(level);
+     traceISR_EXIT();
+     return pdFALSE;
+ #else
+diff --git a/components/mbedtls/port/esp_psa_crypto_init.c b/components/mbedtls/port/esp_psa_crypto_init.c
+index a929c82356..f7dbbd83ac 100644
+--- a/components/mbedtls/port/esp_psa_crypto_init.c
++++ b/components/mbedtls/port/esp_psa_crypto_init.c
+@@ -23,6 +23,8 @@ ESP_SYSTEM_INIT_FN(mbedtls_psa_crypto_init_fn, SECONDARY, BIT(0), 104)
+ {
+     psa_status_t status = psa_crypto_init();
+     if (status != PSA_SUCCESS) {
++        ESP_EARLY_LOGE("psa_init", "psa_crypto_init failed: %d (%s)",
++                       (int)status, "diagnostic");
+         return ESP_FAIL;
+     }
+     return ESP_OK;
+diff --git a/components/riscv/vectors_rtthread.S b/components/riscv/vectors_rtthread.S
+index 7339e3cfea..33abc63437 100644
+--- a/components/riscv/vectors_rtthread.S
++++ b/components/riscv/vectors_rtthread.S
+@@ -6,6 +6,15 @@
+ 
+ #include "sdkconfig.h"
+ 
++/* rtconfig.h decides RT_USING_SMP, and the trap path has to know: in an SMP
++ * build the three switch globals do not exist and the kernel performs the IRQ
++ * switch itself. The RT-Thread component publishes its config directory
++ * globally (CMakeLists: idf_build_set_property(INCLUDE_DIRECTORIES ...)), so
++ * this include resolves without touching the riscv component's own paths. */
++#if CONFIG_IDF_RTOS_RTTHREAD
++#include "rtconfig.h"
++#endif
++
+ #if CONFIG_IDF_RTOS_RTTHREAD
+ 
+ #include "soc/soc.h"
+@@ -18,6 +27,22 @@
+ #define LOAD                    lw
+ #define REGBYTES                4
+ 
++/* The frame must match rt_hw_stack_frame_t (32 integer slots first, then
++ * f0..f31 at higher addresses) and port/common/context_gcc.S.
++ * __riscv_flen comes from the toolchain -march (the S31 arch string carries
++ * f2p2), so this is a property of the build, not an rtconfig.h option. */
++#if defined(__riscv_flen) && (__riscv_flen == 32)
++#define RT_FPU_FRAME            1
++#define FPREG_BYTES             4
++#define FPSTORE                 fsw
++#define FPLOAD                  flw
++#elif defined(__riscv_flen) && (__riscv_flen == 64)
++#define RT_FPU_FRAME            1
++#define FPREG_BYTES             8
++#define FPSTORE                 fsd
++#define FPLOAD                  fld
++#endif
++
+     .section .exception_vectors.text, "ax"
+     .global _interrupt_handler
+     .global _tee_interrupt_handler
+@@ -29,7 +54,18 @@
+  * whether to switch to to_thread. */
+ _interrupt_handler:
+ _tee_interrupt_handler:
+-    /* Save the outermost context on the thread stack and nested contexts on the interrupt stack. */
++    /* Save the outermost context on the thread stack and nested contexts on the interrupt stack.
++     *
++     * The frame must have exactly the same shape as the one context_gcc.S builds
++     * for a cooperative switch: 32 integer slots followed by 32 FP slots at
++     * higher addresses. If the interrupt frame were smaller, the trap exit would
++     * return with sp short by the FP area whenever it resumes a cooperatively
++     * switched thread - and that corrupts pure-integer threads as well, no
++     * floating point needs to be involved.
++     */
++#ifdef RT_FPU_FRAME
++    addi sp, sp, -32 * FPREG_BYTES          /* FP slots live at the higher addresses. */
++#endif
+     addi sp, sp, -32 * REGBYTES             /* Allocate a frame for 32 CPU registers. */
+     STORE x1,   1 * REGBYTES(sp)            /* Save ra. */
+ 
+@@ -69,17 +105,89 @@ _tee_interrupt_handler:
+     STORE x30, 30 * REGBYTES(sp)
+     STORE x31, 31 * REGBYTES(sp)
+ 
++#ifdef RT_FPU_FRAME
++    /* mstatus.FS is non-zero in every context this entry can run on:
++     * rt_hw_stack_init_core() builds thread frames with mstatus=0x7880, and
++     * rtthread_startup() keeps MIE off until the first thread's mret, so no
++     * interrupt can arrive with the FPU disabled. */
++    FPSTORE f0,  (32 * REGBYTES +  0 * FPREG_BYTES)(sp)
++    FPSTORE f1,  (32 * REGBYTES +  1 * FPREG_BYTES)(sp)
++    FPSTORE f2,  (32 * REGBYTES +  2 * FPREG_BYTES)(sp)
++    FPSTORE f3,  (32 * REGBYTES +  3 * FPREG_BYTES)(sp)
++    FPSTORE f4,  (32 * REGBYTES +  4 * FPREG_BYTES)(sp)
++    FPSTORE f5,  (32 * REGBYTES +  5 * FPREG_BYTES)(sp)
++    FPSTORE f6,  (32 * REGBYTES +  6 * FPREG_BYTES)(sp)
++    FPSTORE f7,  (32 * REGBYTES +  7 * FPREG_BYTES)(sp)
++    FPSTORE f8,  (32 * REGBYTES +  8 * FPREG_BYTES)(sp)
++    FPSTORE f9,  (32 * REGBYTES +  9 * FPREG_BYTES)(sp)
++    FPSTORE f10, (32 * REGBYTES + 10 * FPREG_BYTES)(sp)
++    FPSTORE f11, (32 * REGBYTES + 11 * FPREG_BYTES)(sp)
++    FPSTORE f12, (32 * REGBYTES + 12 * FPREG_BYTES)(sp)
++    FPSTORE f13, (32 * REGBYTES + 13 * FPREG_BYTES)(sp)
++    FPSTORE f14, (32 * REGBYTES + 14 * FPREG_BYTES)(sp)
++    FPSTORE f15, (32 * REGBYTES + 15 * FPREG_BYTES)(sp)
++    FPSTORE f16, (32 * REGBYTES + 16 * FPREG_BYTES)(sp)
++    FPSTORE f17, (32 * REGBYTES + 17 * FPREG_BYTES)(sp)
++    FPSTORE f18, (32 * REGBYTES + 18 * FPREG_BYTES)(sp)
++    FPSTORE f19, (32 * REGBYTES + 19 * FPREG_BYTES)(sp)
++    FPSTORE f20, (32 * REGBYTES + 20 * FPREG_BYTES)(sp)
++    FPSTORE f21, (32 * REGBYTES + 21 * FPREG_BYTES)(sp)
++    FPSTORE f22, (32 * REGBYTES + 22 * FPREG_BYTES)(sp)
++    FPSTORE f23, (32 * REGBYTES + 23 * FPREG_BYTES)(sp)
++    FPSTORE f24, (32 * REGBYTES + 24 * FPREG_BYTES)(sp)
++    FPSTORE f25, (32 * REGBYTES + 25 * FPREG_BYTES)(sp)
++    FPSTORE f26, (32 * REGBYTES + 26 * FPREG_BYTES)(sp)
++    FPSTORE f27, (32 * REGBYTES + 27 * FPREG_BYTES)(sp)
++    FPSTORE f28, (32 * REGBYTES + 28 * FPREG_BYTES)(sp)
++    FPSTORE f29, (32 * REGBYTES + 29 * FPREG_BYTES)(sp)
++    FPSTORE f30, (32 * REGBYTES + 30 * FPREG_BYTES)(sp)
++    FPSTORE f31, (32 * REGBYTES + 31 * FPREG_BYTES)(sp)
++#endif
++
+     /* Keep this level's context pointer until it is stored in its own interrupt stack slot. */
+     mv    t1, sp
+ 
+     /* Only the outermost interrupt switches to the system interrupt stack. Nested
+      * interrupts already use that stack; reloading __stack_end__ would overwrite
+      * the outer frame, so continue growing downward from the current sp. */
+-    la    t0, rt_interrupt_nest
+-    lw    t0, 0(t0)
++    /* This core's interrupt nest counter.
++     *
++     * The single-core build reads the global directly: one `la` and one load,
++     * nothing that can land in flash, and this exact shape has been running
++     * since the first bring-up.
++     *
++     * The SMP build cannot use a global there - rt_interrupt_nest is a macro
++     * over rt_cpu_self()->irq_nest (irq.c:68) and has no symbol - so it indexes
++     * an IRAM table of per-CPU pointers with mhartid. It cannot use a call
++     * either: IDF disables the flash cache while tuning MSPI/PSRAM timing, and a
++     * flash-resident callee faults in that window (observed: MEPC 0x40013b1e
++     * resolved to rt_enter_critical in IROM).
++     *
++     * The two builds therefore read this value differently on purpose. */
++    la    t2, rt_irq_nest_slot
++    csrr  t0, mhartid
++    slli  t0, t0, 2
++    add   t0, t0, t2
++    lw    t0, 0(t0)         /* t0 = slot[n], the address of this core's counter */
++    lw    t0, 0(t0)         /* t0 = the counter itself - the branch needs a value,
++                             * not a pointer: a pointer is never zero, so a missing
++                             * load here makes every interrupt look nested */
+     bnez  t0, _rtthread_nested_entry
+-    /* Switch to the system interrupt stack for C interrupt service calls. */
+-    la    sp, __stack_end__
++    /* Switch to this core's interrupt stack for C interrupt service calls.
++     *
++     * A single literal address was correct while there was one core. With two,
++     * both cores would push frames downward from the same place and overwrite
++     * each other, so the top comes from a per-CPU table instead - indexed the
++     * same way as the nest counter above, and for the same reason (no call: the
++     * cache can be off here).
++     *
++     * rt_irq_stack_top[0] is still __stack_end__, so CPU0 is unaffected.
++     */
++    la    t2, rt_irq_stack_top
++    csrr  t0, mhartid
++    slli  t0, t0, 2
++    add   t0, t0, t2
++    lw    sp, 0(t0)
+ _rtthread_nested_entry:
+     /* Reserve 16 bytes per level for C stack alignment. Nested slots grow downward
+      * without overwriting outer slots; the outer thread stack pointer does not
+@@ -123,6 +231,7 @@ _rtthread_nested_entry:
+     and   a1, a1, t0      /* Mask off the interrupt flag in mcause. */
+     jal   _global_interrupt_handler
+ 
++
+     li    t0, 0x8
+     csrrc t0, mstatus, t0 /* Disable global interrupts before a possible context switch. */
+ 
+@@ -147,10 +256,46 @@ _rtthread_nested_entry:
+ #endif // SOC_INT_HW_NESTED_SUPPORTED
+ 
+     /* Nested exits restore the interrupted handler; only the outermost exit schedules. */
+-    la    t0, rt_interrupt_nest
+-    lw    t0, 0(t0)
++    /* This core's interrupt nest counter.
++     *
++     * The single-core build reads the global directly: one `la` and one load,
++     * nothing that can land in flash, and this exact shape has been running
++     * since the first bring-up.
++     *
++     * The SMP build cannot use a global there - rt_interrupt_nest is a macro
++     * over rt_cpu_self()->irq_nest (irq.c:68) and has no symbol - so it indexes
++     * an IRAM table of per-CPU pointers with mhartid. It cannot use a call
++     * either: IDF disables the flash cache while tuning MSPI/PSRAM timing, and a
++     * flash-resident callee faults in that window (observed: MEPC 0x40013b1e
++     * resolved to rt_enter_critical in IROM).
++     *
++     * The two builds therefore read this value differently on purpose. */
++    la    t2, rt_irq_nest_slot
++    csrr  t0, mhartid
++    slli  t0, t0, 2
++    add   t0, t0, t2
++    lw    t0, 0(t0)         /* t0 = slot[n], the address of this core's counter */
++    lw    t0, 0(t0)         /* t0 = the counter itself - the branch needs a value,
++                             * not a pointer: a pointer is never zero, so a missing
++                             * load here makes every interrupt look nested */
+     bnez  t0, spurious_interrupt
+ 
++#ifdef RT_USING_SMP
++    /*
++     * SMP: the kernel decides and performs the switch.
++     *
++     * There is no "switch requested" flag to consult - two cores sharing one
++     * flag would race, and the MP scheduler already keeps the decision in the
++     * per-CPU structure. rt_scheduler_do_irq_switch() takes the trap frame as
++     * its argument and rt_hw_context_switch_exit restores from the stack it
++     * leaves behind, which is exactly the shape the reference port uses
++     * (interrupt_gcc.S:312-340).
++     */
++    mv    sp, sp
++    mv    a0, sp
++    call  rt_scheduler_do_irq_switch
++    tail  rt_hw_context_switch_exit
++#else
+     /* Read the RT-Thread interrupt context switch flag. */
+     la    s0, rt_thread_switch_interrupt_flag
+     lw    s2, 0(s0)
+@@ -172,6 +317,8 @@ _rtthread_nested_entry:
+     LOAD  s1, 0(s0)
+     LOAD  sp, 0(s1)
+ 
++#endif /* RT_USING_SMP */
++
+ spurious_interrupt:
+     /* Restore the return address from the selected context for nesting or thread switching. */
+     LOAD  a0,  0 * REGBYTES(sp)
+@@ -180,15 +327,39 @@ spurious_interrupt:
+     LOAD  x1,   1 * REGBYTES(sp)
+ 
+     LOAD  t0,   2 * REGBYTES(sp)
+-#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
+-    /* Common context_gcc.S stores only MPIE for a cooperative switch.
+-     * Such a frame can also be resumed here by the tick ISR. Keep MPP=M
+-     * without forcing MPIE: rt_schedule restores its caller's MIE later.
++    /* Supply MPP=M and, on FPU targets, FS=3.
++     *
++     * Both are missing from a frame produced by a cooperative switch, because
++     * port/common/context_gcc.S stores only MPIE in slot 2 - it masks mstatus
++     * with 8 first (context_gcc.S:152-158). So whatever slot 2 holds, the two
++     * fields a trap exit needs have to be added here.
++     *
++     * MPP is why an mret on such a frame would otherwise return to user mode
++     * and fault. Every target this file is built for (C3, C6, S31) is
++     * machine-mode only, and a capability predicate would be wrong: S31 sets
++     * SOC_INT_HW_NESTED_SUPPORTED yet needs the fix exactly like the PLIC
++     * targets do.
++     *
++     * FS is the one that actually bit us. This file restores f0..f31 with flw
++     * after this point, and executing an FP instruction with mstatus.FS=0 is an
++     * illegal instruction. On ESP32-S31 that is reported as MCAUSE=1
++     * (instruction access fault) with MTVAL equal to the flw's own address,
++     * because SOC_CPU_HAS_FPU_EXT_ILL_BUG means the EXT_ILL CSR does not record
++     * FLW/FSW (soc_caps.h:184) and vectors.S has no rev<3 workaround for this
++     * target. The observed crash was exactly that: MEPC=MTVAL=the first flw of
++     * this epilogue, MSTATUS=0x80006080, i.e. FS read back as 3 at fault time
++     * while the mstatus written one instruction earlier had it at 0.
++     *
++     * context_gcc.S:245 already writes 0x7800 for FPU builds; this is the same
++     * value, so both exits now agree on what a resumed frame looks like.
+      */
+-    li    t1, 0x1800
+-    or    t0, t0, t1
++#ifdef RT_FPU_FRAME
++    li    t1, 0x7800                        /* MPP=M | FS=3 */
++#else
++    li    t1, 0x1800                        /* MPP=M */
+ #endif
+-    csrw  mstatus, t0                       /* Restore the saved interrupt state, supplying MPP=M for cooperative frames. */
++    or    t0, t0, t1
++    csrw  mstatus, t0                       /* Restore the saved interrupt state, supplying MPP (and FS on FPU targets). */
+ 
+     LOAD  x3,   3 * REGBYTES(sp)            /* restore gp from slot 3 */
+     LOAD  x4,   4 * REGBYTES(sp)
+@@ -221,6 +392,56 @@ spurious_interrupt:
+     LOAD  x31, 31 * REGBYTES(sp)
+ 
+     addi  sp, sp, 32 * REGBYTES
++
++#ifdef RT_FPU_FRAME
++    /* Paired with the prologue. The mstatus restored above carries FS=3 for
++     * every frame that has FP slots, so these loads do not trap. */
++    FPLOAD f0,  ( 0 * FPREG_BYTES)(sp)
++    FPLOAD f1,  ( 1 * FPREG_BYTES)(sp)
++    FPLOAD f2,  ( 2 * FPREG_BYTES)(sp)
++    FPLOAD f3,  ( 3 * FPREG_BYTES)(sp)
++    FPLOAD f4,  ( 4 * FPREG_BYTES)(sp)
++    FPLOAD f5,  ( 5 * FPREG_BYTES)(sp)
++    FPLOAD f6,  ( 6 * FPREG_BYTES)(sp)
++    FPLOAD f7,  ( 7 * FPREG_BYTES)(sp)
++    FPLOAD f8,  ( 8 * FPREG_BYTES)(sp)
++    FPLOAD f9,  ( 9 * FPREG_BYTES)(sp)
++    FPLOAD f10, (10 * FPREG_BYTES)(sp)
++    FPLOAD f11, (11 * FPREG_BYTES)(sp)
++    FPLOAD f12, (12 * FPREG_BYTES)(sp)
++    FPLOAD f13, (13 * FPREG_BYTES)(sp)
++    FPLOAD f14, (14 * FPREG_BYTES)(sp)
++    FPLOAD f15, (15 * FPREG_BYTES)(sp)
++    FPLOAD f16, (16 * FPREG_BYTES)(sp)
++    FPLOAD f17, (17 * FPREG_BYTES)(sp)
++    FPLOAD f18, (18 * FPREG_BYTES)(sp)
++    FPLOAD f19, (19 * FPREG_BYTES)(sp)
++    FPLOAD f20, (20 * FPREG_BYTES)(sp)
++    FPLOAD f21, (21 * FPREG_BYTES)(sp)
++    FPLOAD f22, (22 * FPREG_BYTES)(sp)
++    FPLOAD f23, (23 * FPREG_BYTES)(sp)
++    FPLOAD f24, (24 * FPREG_BYTES)(sp)
++    FPLOAD f25, (25 * FPREG_BYTES)(sp)
++    FPLOAD f26, (26 * FPREG_BYTES)(sp)
++    FPLOAD f27, (27 * FPREG_BYTES)(sp)
++    FPLOAD f28, (28 * FPREG_BYTES)(sp)
++    FPLOAD f29, (29 * FPREG_BYTES)(sp)
++    FPLOAD f30, (30 * FPREG_BYTES)(sp)
++    FPLOAD f31, (31 * FPREG_BYTES)(sp)
++    addi  sp, sp, 32 * FPREG_BYTES
++#endif
++
+     mret
+     .size  _interrupt_handler, .-_interrupt_handler
++
++/* No _mtvt_table here on purpose.
++ *
++ * CLIC targets compile vectors_clic.S unconditionally, and that file already
++ * defines _mtvt_table; its free-interrupt slots point at _interrupt_handler,
++ * which this file provides. Defining the table here as well would duplicate the
++ * symbol. On ESP32-S31 the CPU interrupt lines are 0..31 (SOC_CPU_INTR_NUM=32),
++ * the internal ones sit at 25..28, and everything the interrupt matrix routes
++ * lands on slots that resolve to _interrupt_handler.
++ */
++
+ #endif /* CONFIG_IDF_RTOS_RTTHREAD */
+diff --git a/components/spi_flash/cache_utils.c b/components/spi_flash/cache_utils.c
+index 227a0efd6b..e3b9577488 100644
+--- a/components/spi_flash/cache_utils.c
++++ b/components/spi_flash/cache_utils.c
+@@ -50,6 +50,10 @@ static volatile bool s_flash_op_complete = false;
+ static volatile int s_flash_op_cpu = -1;
+ #endif
+ 
++/* Provided strongly by the RT-Thread port when a second core schedules. */
++void spi_flash_other_core_stop(void);
++void spi_flash_other_core_resume(void);
++
+ void spi_flash_init_lock(void)
+ {
+     s_flash_op_mutex = xSemaphoreCreateRecursiveMutex();
+@@ -108,6 +112,19 @@ void IRAM_ATTR spi_flash_op_block_func(void *arg)
+ #endif // #if ( ( CONFIG_FREERTOS_SMP ) && ( !CONFIG_FREERTOS_UNICORE ) )
+ }
+ 
++/*
++ * Hooks for a scheduler that runs on a second core while this one disables its flash
++ * cache. Weak, so the common (single-core) case links without them and the RT-Thread port
++ * provides strong definitions.
++ */
++__attribute__((weak)) void IRAM_ATTR spi_flash_other_core_stop(void)
++{
++}
++
++__attribute__((weak)) void IRAM_ATTR spi_flash_other_core_resume(void)
++{
++}
++
+ void IRAM_ATTR spi_flash_disable_interrupts_caches_and_other_cpu(void)
+ {
+ #if CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+@@ -251,6 +268,30 @@ void IRAM_ATTR spi_flash_enable_interrupts_caches_no_os(void)
+ 
+ #else // CONFIG_FREERTOS_UNICORE
+ 
++/*
++ * Hooks for a scheduler running on a second core.
++ *
++ * The multi-core half of this file is compiled out here, so nothing parks the other core
++ * while our flash cache is off.
++ *
++ * The weak definitions live in THIS branch, not in the multi-core one above: measured on
++ * ESP32-C5 (a single-core target, so CONFIG_FREERTOS_UNICORE is set), the calls in
++ * spi_flash_disable/enable_interrupts_caches_and_other_cpu() had no definition at all and
++ * the link failed with "undefined reference to spi_flash_other_core_stop". The stubs were
++ * sitting inside `#ifndef CONFIG_FREERTOS_UNICORE`, which is the branch that does not call
++ * them. The RT-Thread port still overrides both strongly where it starts a second core.
++ */
++void spi_flash_other_core_stop(void);
++void spi_flash_other_core_resume(void);
++
++__attribute__((weak)) void IRAM_ATTR spi_flash_other_core_stop(void)
++{
++}
++
++__attribute__((weak)) void IRAM_ATTR spi_flash_other_core_resume(void)
++{
++}
++
+ void spi_flash_init_lock(void)
+ {
+ }
+@@ -283,6 +324,20 @@ void spi_flash_op_unlock(void)
+ void IRAM_ATTR spi_flash_disable_interrupts_caches_and_other_cpu(void)
+ {
+     spi_flash_op_lock();
++
++    /*
++     * Stop the other core before the cache goes off.
++     *
++     * The multi-core half of this file is compiled out under CONFIG_FREERTOS_UNICORE, so
++     * on a build where RT-Thread *does* schedule a second core nothing parks it - and its
++     * tick handler calls into flash (rt_tick_increase is IROM), which faults with
++     * MCAUSE 0x19 the moment the cache is disabled.
++     *
++     * The hook is weak so this file carries no RT-Thread dependency: the port overrides
++     * it, and a build without SMP links the stub below.
++     */
++    spi_flash_other_core_stop();
++
+     esp_intr_noniram_disable();
+     spi_flash_disable_cache(0, &s_flash_op_cache_state[0]);
+ }
+@@ -291,6 +346,10 @@ void IRAM_ATTR spi_flash_enable_interrupts_caches_and_other_cpu(void)
+ {
+     spi_flash_restore_cache(0, s_flash_op_cache_state[0]);
+     esp_intr_noniram_enable();
++
++    /* Let the other core run again, now that its instruction fetches are safe. */
++    spi_flash_other_core_resume();
++
+     spi_flash_op_unlock();
+ }
+ 

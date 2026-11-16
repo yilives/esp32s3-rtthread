@@ -17,32 +17,50 @@ Linux/macOS 同理，只需把`.ps1`换成`.sh`。
 | `CONFIG_IDF_RTOS_RTTHREAD_FREERTOS_SHIM` | 启用 FreeRTOS API 兼容层 |
 | `CONFIG_IDF_RTTHREAD_HEAP_SIZE` | RT-Thread 内核堆大小（独立于 IDF 的 heap_caps） |
 
-这些来自一个 fork。**必须用这个 fork 的确切提交**——本仓库的 IDF 补丁是针对它的
-基线写的，换一个 IDF 树补丁打不上。
+**用上游的 fork，不用 fork 里的某个分支。** 本仓库自带两个补丁，能把公开的
+`rtt-dev` 变成支持 S3 的平台层：
 
 ```powershell
-git clone https://github.com/yilives/esp-idf-rtt-c5.git <IDF_PATH>
+git clone -b rtt-dev https://github.com/RT-Thread-packages/esp-idf.git <IDF_PATH>
 cd <IDF_PATH>
-git checkout 6b6076c8e20206f3e627bf0ab6791bdebf9e7c27
+git submodule update --init --recursive      # 必须，否则 CMake 报 include 目录不存在
 ```
 
-仓库名里的 `c5` 是历史原因：这个 fork 起初为 ESP32-C5 做的，后来扩展到了
-S3/S31 和 C3/C6。**支持 S3 的是 `main` 分支上的这个提交。**
+**不需要克隆任何别的 fork。** `rtt-dev` 的 `IDF_RTOS_RTTHREAD` 原来只允许
+C3/C6，`esp-idf/patches/0000-idf-platform-s3.patch` 把它扩到 S3，并补上 S3 需要的
+启动、链接段、双核 flash 握手和 Xtensa port。
 
-> **不要用 `RT-Thread-packages/esp-idf`。** 它的 `rtt-dev` 分支缺少本移植需要的
-> S3 启动、双核 flash 握手和 FreeRTOS shim 集成。实测在本仓库 `0001` 补丁上
-> `git apply --check` 会失败（`esp_libc/src/locks.c`、`esp_system/esp_ipc.c`、
-> `freertos/port_systick.c`、`spi_flash/cache_utils.c` 四个文件）。
->
-> 早先的文档写的是 `git clone -b rtt-s31 https://github.com/RT-Thread-packages/esp-idf.git`，
-> **那个分支不存在**（`ls-remote` 只返回 `master`、`rtt-dev`、`rtt-dev-2024`）。
-> 照做的人会卡在 clone 这一步。
+补丁由 `tools/fetch-upstream.ps1` 按顺序应用；手工做就是：
 
-### 为什么不提供独立的 IDF patch
+```powershell
+cd <IDF_PATH>
+git apply <本仓库>\esp-idf\patches\0000-idf-platform-s3.patch      # 平台层，17 个文件
+git apply <本仓库>\esp-idf\patches\0001-idf-core-smp-hooks.patch   # SMP 钩子，17 个文件
+```
 
-一个能把官方 IDF 变成这个 fork 的等价补丁需要覆盖 S3 的启动、中断、双核 flash
-握手和 Kconfig 分支，那是这个 fork 本身的工作量。**这里只提供叠加在 fork 之上的
-那部分**（`esp-idf/patches/0001-*.patch`，17 个文件）。
+> **顺序不能反。** `0001` 里有五个 hunk 依赖 `0000` 先落地。实测在干净的
+> `rtt-dev` 上单独打 `0001` 会在 `esp_libc/src/locks.c` 和
+> `esp_system/esp_ipc.c` 上失败。
+
+### 这两个补丁是从哪来的
+
+从一块已经调通的 S3 移植里导出的，用 `git diff rtt-dev..移植树` 生成，只保留与
+S3 相关的部分（另外几个芯片的 `ld/esp32c*.in` 和 `esp_wifi/esp32c5` 改动被剔除）。
+
+产物验证过：`rtt-dev` + `0000` + `0001` + 本仓库的 `components/rtthread`，
+与那棵移植树逐文件比对，**S3 相关的 13 个关键文件全部一致**。
+
+### 子模块
+
+`git submodule update --init --recursive` 必须在第一次构建前跑一次。缺了 lwip、
+mbedtls、nimble 这些子模块，CMake 会在 `component.cmake:321` 报
+`Include directory ... is not a directory`——错误指向的是 unity 或 cmock 的 include
+路径，和真正缺的东西无关。
+
+另外两个目录不是子模块，是上游私有的预编译件：`components/unity/unity` 和
+`components/cmock/CMock`。缺了同样会报那个 include 错误。它们在本仓库的
+`.git/info/exclude` 里出现过，但**没有随仓库分发**——如果你的树里没有，从任何完整的
+IDF 安装里拷一份即可。
 
 ### 装工具链
 
@@ -96,15 +114,20 @@ Copy-Item .\rt-thread\libcpu\xtensa     <RTT_ROOT>\libcpu\ -Recurse
 cd <RTT_ROOT>
 git apply <本仓库>\rt-thread\patches\0001-kernel-smp-hooks.patch
 
-# 3. IDF 组件 + 补丁
+# 3. IDF 组件 + 两个补丁（顺序不能反）
 Copy-Item <本仓库>\esp-idf\components\rtthread <IDF_PATH>\components\ -Recurse
 cd <IDF_PATH>
+git apply <本仓库>\esp-idf\patches\0000-idf-platform-s3.patch
 git apply <本仓库>\esp-idf\patches\0001-idf-core-smp-hooks.patch
 ```
 
-> **只有一个 IDF 补丁。** 早先这里还写着 `0002-freertos-shim-iram.patch`，
+> **两个补丁，不是三个。** 早先这里还写着 `0002-freertos-shim-iram.patch`，
 > **那个文件不存在**。把 shim 的 ISR 路径放进 IRAM 的做法改成了链接片段
 > `esp-idf/components/rtthread/linker.lf`，它随组件目录一起复制，不需要单独打补丁。
+>
+> `0000` 和 `0001` 的分工：`0000` 把公开 `rtt-dev` 变成能跑 S3 的平台层（启动、
+> 链接段、IPI、Xtensa port），`0001` 是叠加在上面的 SMP 钩子（nvs 锁、malloc 锁、
+> flash 握手）。
 
 ### 内核补丁改了什么
 

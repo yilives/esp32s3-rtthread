@@ -64,9 +64,9 @@ cd esp32s3-rtthread
 
 ### 2. 准备上游
 
-**先准备两棵上游树。** 具体地址和提交号在
-[docs/BUILD.md](docs/BUILD.md) 的「准备 ESP-IDF」和「准备 RT-Thread」两节，
-**照抄那里的命令**——IDF 那个 fork 的仓库名和分支名反直觉，写在这里容易抄错。
+**先准备两棵上游树。** 具体命令和提交号在 [docs/BUILD.md](docs/BUILD.md) 的
+「准备 ESP-IDF」和「准备 RT-Thread」两节。IDF 侧用的是**上游的 `rtt-dev` 分支**，
+本仓库自带的两个补丁把 S3 支持叠加上去——不需要克隆任何第三方 fork。
 
 然后按这个目录布局放好，`tools/env.ps1` 按这个顺序找：
 
@@ -74,7 +74,7 @@ cd esp32s3-rtthread
 <你的目录>/
 ├── esp32s3-rtthread/     <- 刚克隆的
 ├── rt-thread/            <- 上游 RT-Thread
-└── esp-idf-rtt/          <- IDF fork（yilives/esp-idf-rtt-c5，main）
+└── esp-idf-rtt/          <- IDF，RT-Thread-packages/esp-idf 的 rtt-dev 分支
 ```
 
 找不到会报 `IDF_PATH is not set and no ESP-IDF checkout was found next to this
@@ -89,7 +89,8 @@ repository`。也可以直接设 `IDF_PATH` / `RTTHREAD_ROOT` 环境变量指向
 
 1. 把 `rt-thread/bsp/ESP/ESP32_S3/` 和 `rt-thread/libcpu/xtensa/` 复制进你的 RT-Thread 树
 2. 打 `rt-thread/patches/0001-kernel-smp-hooks.patch`（4 个内核文件）
-3. 把 `esp-idf/components/rtthread/` 复制进 IDF，并打 IDF patch
+3. 把 `esp-idf/components/rtthread/` 复制进 IDF，并按顺序打两个 IDF 补丁
+   （`0000-idf-platform-s3.patch` → `0001-idf-core-smp-hooks.patch`）
 
 > 手工做也可以，见 [docs/BUILD.md](docs/BUILD.md)。
 

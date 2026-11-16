@@ -2351,6 +2351,82 @@ stub 本身当作 `struct ft_ipc *`，那么 `->available` 就落在 magic 之�
 
 ---
 
+## 44. S3 的平台层支持只存在于我的 fork 里，没进仓库（已修）
+
+### 问题
+
+有人问了一句："官方没有 RT，我本身目的就是移植，结果你把一些必要的东西推出去不负责了？"
+
+核实后他是对的。
+
+`RT-Thread-packages/esp-idf` 的 `rtt-dev`（`2265714`）是那棵移植树的**祖先**，
+两者相差 **131 个文件、33926 行新增**：
+
+| 位置 | 文件数 | 之前是否在本仓库 |
+| --- | --- | --- |
+| `components/rtthread/` | 107（含 C3/C5/C6/S31 端口） | 只发了 S3 的 22 个 |
+| IDF 平台层 | 24 | **一个都没发** |
+
+**S3 支持从来不在任何公开分支上，是被我留在 fork 里的。** 而 README 让读者去克隆
+那个 fork，等于把这些工作放到了仓库外面。
+
+缺的具体是什么（都是 S3 必须的）：
+
+```
+components/esp_system/startup.c                              启动流程
+components/esp_system/ld/esp32s3/sections.ld.in              S3 链接段
+components/esp_system/ld/ld.flash.sections
+components/esp_system/port/arch/xtensa/esp_ipc_isr_handler.S Xtensa IPI
+components/freertos/CMakeLists.txt
+components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/xtensa_rtos.h
+components/bt/controller/esp32/bt.c
+components/esp_wifi/src/wifi_netif.c
+components/mbedtls/port/esp_psa_crypto_init.c
+...
+```
+
+### 修法
+
+新增 `esp-idf/patches/0000-idf-platform-s3.patch`（61191 字节，17 个文件），
+用 `git diff rtt-dev..移植树` 生成，剔除了别的芯片的 `ld/esp32c*.in` 和
+`esp_wifi/esp32c5` 改动。
+
+**顺序**：`0000` 先，`0001` 后。`0001` 里有五个 hunk 依赖 `0000` 落地——实测在干净
+`rtt-dev` 上单独打 `0001` 会在 `esp_libc/src/locks.c` 和 `esp_system/esp_ipc.c` 失败。
+
+`fetch-upstream.ps1` 相应重写：
+
+1. 基线从"fork 的 main"改成"公开 `rtt-dev` 的 `2265714`"
+2. **先查两棵树是否干净**，脏了直接拒绝——半打补丁的树比不打更糟
+3. 按顺序**真正 apply**，任一失败就 `git checkout -- . && git clean -fdq` 回滚
+4. `--whitespace=nowarn`，因为 `0000` 有一处 EOF 空行，git 的警告在 PowerShell 里
+   会被当成失败
+
+### 验证
+
+`rtt-dev` + `0000` + `0001` + 本仓库 `components/rtthread`：
+
+- 与那棵移植树的 **13 个 S3 关键文件逐字节相同**
+- 这棵自包含树构建成功，产出 `1130272` 字节的 `s3_rtt_test.bin`
+
+**烧录验证没做成**——CH340K 从 USB 上消失了（`Get-PnpDevice` 里连 `USB\VID_1A86*`
+都查不到），板子应该是断电或线松了。构建通过是这一轮的边界。
+
+### 顺带记一个坑
+
+新 clone 的 IDF 必须先 `git submodule update --init --recursive`。缺子模块时 CMake 报
+
+```
+CMake Error at tools/cmake/component.cmake:321 (message):
+  Include directory '.../components/unity/unity/src' is not a directory.
+```
+
+**错误指向 unity 的 include 路径，和真正缺的 lwip/mbedtls/nimble 无关。** 另外
+`components/unity/unity` 和 `components/cmock/CMock` 在上游不是子模块，是私有预编译件，
+`.git/info/exclude` 里有名字但仓库不分发——缺了同样报那个错误。已写进 BUILD.md。
+
+---
+
 ## 43. 文档里的上游地址是错的：分支不存在、补丁不存在、浅克隆拿不到提交
 
 ### 怎么发现的
@@ -2487,3 +2563,4 @@ stub 本身当作 `struct ft_ipc *`，那么 `->available` 就落在 magic 之�
 | 41 | 随机顺序压力测试：无泄漏，报告两次算错 | 信息 | 已加 `stress-random.ps1`；同状态 + 变长度判据 |
 | 42 | **第 13 条的 113 定位：是超时，不是偶发** | 信息 | 已查明；`select()` 路径暴露 shim 空缺 |
 | 43 | 文档的上游地址错误：分支/补丁不存在，浅克隆拿不到提交 | **高** | 已修：改 fork 地址 + fetch 脚本核对基线 |
+| 44 | **S3 平台层只在 fork 里，没进仓库** | **高** | 已修：`0000-idf-platform-s3.patch` 让仓库自包含 |

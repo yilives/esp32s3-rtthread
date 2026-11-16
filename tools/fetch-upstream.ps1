@@ -60,8 +60,8 @@ if (-not (Test-Path (Join-Path $RtThreadPath '.git'))) {
 #
 # So check the baseline up front and say what the right one is, rather than
 # letting them read a patch rejection.
-$idfExpected = '6b6076c8e20206f3e627bf0ab6791bdebf9e7c27'
-$idfRemote = 'https://github.com/yilives/esp-idf-rtt-c5.git'
+$idfExpected = '2265714019155c638ece55a6603869a5e156a0d7'
+$idfRemote = 'https://github.com/RT-Thread-packages/esp-idf.git (branch rtt-dev)'
 
 if (Get-Command git -ErrorAction SilentlyContinue) {
     $idfHead = (& git -C $IdfPath rev-parse HEAD 2>$null)
@@ -75,7 +75,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             Write-Host ""
             Write-Host "  NOTE: IDF tree is at $idfHead" -ForegroundColor Yellow
             Write-Host "        this repository targets $idfExpected" -ForegroundColor Yellow
-            Write-Host "        on $idfRemote (branch main)" -ForegroundColor Yellow
+            Write-Host "        on $idfRemote" -ForegroundColor Yellow
             if (-not $isAncestor) {
                 Write-Host "        and that commit is not an ancestor of the tree you gave," -ForegroundColor Yellow
                 Write-Host "        so the IDF patch will almost certainly fail below." -ForegroundColor Yellow
@@ -102,29 +102,79 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 # All patches are checked BEFORE anything is written. Applying three of four and
 # failing leaves a tree that neither builds nor reverts cleanly.
 
+# Order matters. 0000 turns the public rtt-dev tree into an S3-capable platform
+# layer; 0001 is the SMP hooks on top of it. Applying 0001 to a tree that has not
+# had 0000 fails on five files.
 $patches = @(
     @{ Repo = $RtThreadPath; Name = '0001-kernel-smp-hooks.patch';     Path = "$repo\rt-thread\patches\0001-kernel-smp-hooks.patch" },
+    @{ Repo = $IdfPath;      Name = '0000-idf-platform-s3.patch';      Path = "$repo\esp-idf\patches\0000-idf-platform-s3.patch" },
     @{ Repo = $IdfPath;      Name = '0001-idf-core-smp-hooks.patch';   Path = "$repo\esp-idf\patches\0001-idf-core-smp-hooks.patch" }
 )
 
+# Patches must be applied IN ORDER, and `git apply --check` cannot verify that:
+# it tests every path against the tree as it is now, so a second patch that only
+# applies after the first one has landed is reported as a failure. Measured -
+# 0000 then 0001 both apply cleanly when applied for real, but checking them in
+# one `git apply --check a b` invocation fails on five files.
+#
+# So: require a clean tree, apply for real one patch at a time, and roll the whole
+# thing back if any of them refuses. A half-patched tree is worse than none - it
+# builds until it does not, and the failure shows up somewhere unrelated.
 if (-not $SkipPatches) {
-    Write-Host "Checking patches apply cleanly..."
+    $touched = @()
 
-    foreach ($p in $patches) {
-        if (-not (Test-Path $p.Path)) { Fail "patch not found: $($p.Path)" }
-
-        Push-Location $p.Repo
+    function Test-CleanRepo($path, $label) {
+        Push-Location $path
         try {
-            $out = git apply --check $p.Path 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  FAILED  $($p.Name)" -ForegroundColor Red
-                Write-Host "          $out"
-                Fail "patch does not apply; nothing has been changed"
+            $dirty = git status --porcelain 2>&1
+            if ($LASTEXITCODE -ne 0) { Fail "cannot read git status of $label" }
+            if ($dirty) {
+                Write-Host "  $label has uncommitted changes:" -ForegroundColor Yellow
+                $dirty | Select-Object -First 8 | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+                Fail "commit, stash or revert them first - this script applies patches"
             }
-            Info "ok      $($p.Name)"
-        } finally {
-            Pop-Location
+        } finally { Pop-Location }
+    }
+
+    Test-CleanRepo $RtThreadPath 'RT-Thread tree'
+    Test-CleanRepo $IdfPath 'ESP-IDF tree'
+
+    Write-Host "Applying patches in order..."
+
+    try {
+        foreach ($p in $patches) {
+            if (-not (Test-Path $p.Path)) { Fail "patch not found: $($p.Path)" }
+
+            Push-Location $p.Repo
+            try {
+                # --whitespace=nowarn: a patch that adds a blank line at EOF is
+                # applied happily by git, but the warning goes to stderr and
+                # PowerShell then reports a non-zero status for a successful
+                # apply. Measured: 0000-idf-platform-s3.patch trips this.
+                $out = git apply --whitespace=nowarn $p.Path 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  FAILED  $($p.Name)" -ForegroundColor Red
+                    $out | Select-Object -First 6 | ForEach-Object { Write-Host "          $_" -ForegroundColor Red }
+                    throw "patch $($p.Name) does not apply"
+                }
+                if (-not ($touched -contains $p.Repo)) { $touched += $p.Repo }
+                Info "ok      $($p.Name)"
+            } finally {
+                Pop-Location
+            }
         }
+    } catch {
+        Write-Host ""
+        Write-Host "  Rolling back the patches already applied..." -ForegroundColor Yellow
+        foreach ($r in $touched) {
+            Push-Location $r
+            try {
+                git checkout -- . 2>&1 | Out-Null
+                git clean -fdq 2>&1 | Out-Null
+            } finally { Pop-Location }
+        }
+        Write-Host "  Both trees are back to the state they were in." -ForegroundColor Yellow
+        Fail $_.Exception.Message
     }
     Write-Host ""
 }
@@ -183,27 +233,14 @@ Copy-Tree "$repo\rt-thread\libcpu\xtensa"     "$RtThreadPath\libcpu\xtensa"
 Write-Host "Copying the RT-Thread IDF component..."
 Copy-Tree "$repo\esp-idf\components\rtthread" "$IdfPath\components\rtthread"
 
-# --------------------------------------------------------------- patch ---
-
-if (-not $SkipPatches) {
-    Write-Host ""
-    Write-Host "Applying patches..."
-
-    foreach ($p in $patches) {
-        Push-Location $p.Repo
-        try {
-            $out = git apply $p.Path 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  FAILED  $($p.Name)" -ForegroundColor Red
-                Write-Host "          $out"
-                Fail "apply failed after files were copied; review with 'git diff'"
-            }
-            Info "applied $($p.Name)"
-        } finally {
-            Pop-Location
-        }
-    }
-}
+# Patches were applied above, before the copy. The two steps do not overlap: the
+# patches touch src/ (RT-Thread) and components/{esp_libc,esp_system,freertos,...}
+# (IDF), the copy writes bsp/ESP/ESP32_S3 + libcpu/xtensa and
+# components/rtthread. Copying after patching therefore cannot undo a hunk.
+#
+# This block used to apply the patches a second time, here, and after my change
+# above it failed every run with "patch does not apply" - the tree was already
+# patched. One application point, not two.
 
 # ---------------------------------------------------------------- done ---
 
